@@ -1,0 +1,72 @@
+{
+  "image": "gt_code128_clean.png",
+  "size_px": [
+    605,
+    250
+  ],
+  "frame": "full",
+  "basis": "full",
+  "frame_info": {},
+  "template": 1,
+  "label_dots": [
+    480,
+    320
+  ],
+  "scale": 0.7933884297520661,
+  "content_bbox_px": [
+    0.0,
+    0.0,
+    605.0,
+    250.0
+  ],
+  "elements": [
+    {
+      "format": "Code 128",
+      "kind": "barcode1d",
+      "text": "ABC123",
+      "quad": [
+        [
+          50.0,
+          0.0
+        ],
+        [
+          554.0,
+          0.0
+        ],
+        [
+          554.0,
+          249.0
+        ],
+        [
+          50.0,
+          249.0
+        ]
+      ],
+      "px": [
+        50.0,
+        0.0,
+        554.0,
+        249.0
+      ],
+      "bar_rows_measured": true,
+      "hri": false,
+      "dots": [
+        39.66942148760331,
+        60.82644628099173,
+        439.53719008264466,
+        258.3801652892562
+      ],
+      "w": 399.86776859504135,
+      "h": 197.55371900826447,
+      "module_width_notes": [],
+      "module_width": 4.0,
+      "bar_height": 198,
+      "modules": 101,
+      "est_width": 404.0
+    }
+  ],
+  "dropped_ocr": [],
+  "decollided": [],
+  "overflow": [],
+  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY4,2.5,198^FT40,259^BCN,198,N,N,N^FDABC123^FS\r\n^XZ\r\n"
+}

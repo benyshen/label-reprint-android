@@ -1,0 +1,72 @@
+{
+  "image": "gt_code39_clean.png",
+  "size_px": [
+    615,
+    250
+  ],
+  "frame": "full",
+  "basis": "full",
+  "frame_info": {},
+  "template": 1,
+  "label_dots": [
+    480,
+    320
+  ],
+  "scale": 0.7804878048780488,
+  "content_bbox_px": [
+    0.0,
+    0.0,
+    615.0,
+    250.0
+  ],
+  "elements": [
+    {
+      "format": "Code 39",
+      "kind": "barcode1d",
+      "text": "ABC123",
+      "quad": [
+        [
+          50.0,
+          0.0
+        ],
+        [
+          564.0,
+          0.0
+        ],
+        [
+          564.0,
+          249.0
+        ],
+        [
+          50.0,
+          249.0
+        ]
+      ],
+      "px": [
+        50.0,
+        0.0,
+        564.0,
+        249.0
+      ],
+      "bar_rows_measured": true,
+      "hri": false,
+      "dots": [
+        39.02439024390244,
+        62.4390243902439,
+        440.1951219512195,
+        256.780487804878
+      ],
+      "w": 401.1707317073171,
+      "h": 194.34146341463412,
+      "module_width_notes": [],
+      "module_width": 3.0,
+      "bar_height": 194,
+      "modules": 129,
+      "est_width": 387.0
+    }
+  ],
+  "dropped_ocr": [],
+  "decollided": [],
+  "overflow": [],
+  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,194^FT39,256^BCN,194,N,N,N^FDABC123^FS\r\n^XZ\r\n"
+}

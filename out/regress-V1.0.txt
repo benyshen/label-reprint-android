@@ -1,0 +1,37 @@
+==============================================================
+V1.0 封版回归
+==============================================================
+
+[1] tools/demo.py  5 个用例
+    gt_code128_clean   elements=1 dropped_ocr=0 zpl_errors=0 warnings=0 overflow=0
+    gt_code39_clean    elements=1 dropped_ocr=0 zpl_errors=0 warnings=0 overflow=0
+    label_sample_1     elements=3 dropped_ocr=1 zpl_errors=0 warnings=0 overflow=0
+    label_sample_2     elements=3 dropped_ocr=1 zpl_errors=0 warnings=0 overflow=0
+    label_sample_3     elements=3 dropped_ocr=1 zpl_errors=0 warnings=0 overflow=0
+
+[2] tools/validate_zpl.py  7 个成品 ZPL
+    OK   模板1  errors=0   gt_code128_clean.zpl
+    OK   模板1  errors=0   gt_code39_clean.zpl
+    OK   模板1  errors=0   label_on_desk.zpl
+    OK   模板1  errors=0   label_sample_1.zpl
+    OK   模板1  errors=0   label_sample_2.zpl
+    OK   模板1  errors=0   label_sample_3.zpl
+    OK   模板2  errors=0   source_calib.zpl
+
+[3] zpl_geometry 常量自检
+    OK   模板表 3 项且尺寸符合 203dpi
+    OK   模板1 60x40 -> 480x320
+    OK   模板2 70x70 -> 559x559
+    OK   模板3 70x40 -> 559x320
+    OK   20 位纯数字走 Code128C = 145 模块
+    OK   20 位非纯数字走 Code128B = 255 模块
+    OK   汉字占 1.0 em
+    OK   ASCII 数字占 ~0.5 em
+    OK   汉字行字号受宽度约束（31 字符 / 416 点 -> 17 号）
+    OK   模块宽下限 2 点
+    OK   文字/条码净空下限 6 点
+
+==============================================================
+demo 用例 5｜ZPL 校验 7（跳过无模板 0）｜常量自检 11
+失败项：0
+==============================================================
