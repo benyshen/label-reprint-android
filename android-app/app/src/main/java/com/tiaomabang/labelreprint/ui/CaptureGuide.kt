@@ -16,13 +16,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
-import com.tiaomabang.labelreprint.zpl.ZplGeometry
-
-/** 模板的长宽比（标签纸的 宽/高），取景框就按它画 */
-fun aspectOfTemplate(template: Int): Float {
-    val t = ZplGeometry.TEMPLATES[template] ?: ZplGeometry.TEMPLATES.getValue(ZplGeometry.DEFAULT_TEMPLATE)
-    return (t.wMm / t.hMm).toFloat()
-}
+import com.tiaomabang.labelreprint.label.CaptureFrame
 
 /**
  * 拍照取景指示框。
@@ -42,15 +36,13 @@ fun CaptureGuide(aspect: Float, hint: String, modifier: Modifier = Modifier) {
     val accent = MaterialTheme.colorScheme.primary
     Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
-            val frac = 0.86f                       // 框最多占画面的 86%，留出边距防误裁
-            var fw = size.width * frac
-            var fh = if (aspect > 0f) fw / aspect else size.height * frac
-            if (fh > size.height * frac) {         // 竖幅标签时反算，始终完整落在画面内
-                fh = size.height * frac
-                fw = fh * aspect
-            }
-            val l = (size.width - fw) / 2f
-            val t = (size.height - fh) / 2f
+            // 框的几何只有一份公式（label/CaptureFrame）：流水线在"没检出标签边框"时
+            // 就是按同一个矩形裁剪照片的，两边必须同源，否则框里框外跟实际处理范围对不上
+            val r = CaptureFrame.rect(aspect, size.width, size.height)
+            val l = r[0]
+            val t = r[1]
+            val fw = r[2] - r[0]
+            val fh = r[3] - r[1]
 
             // 框外遮罩：四条，把框内"抠亮"
             val scrim = Color.Black.copy(alpha = 0.38f)

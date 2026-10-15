@@ -95,7 +95,7 @@ fun CameraPane(
                 AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
                 // 取景指示框：长宽比 = 当前模板，所以框就是在告诉用户"该拍成什么形状、该占多大"
                 CaptureGuide(
-                    aspect = aspectOfTemplate(template),
+                    aspect = ZplGeometry.aspectOf(template),
                     hint = "标签四边对进框内 · 尽量占满",
                     modifier = Modifier.fillMaxSize(),
                 )

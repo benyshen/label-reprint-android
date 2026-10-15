@@ -72,6 +72,12 @@ object ZplGeometry {
     const val TOP_OFFSET = 6     // 整体下移，避免贴纸边
     const val GUARD = 6          // 底部保护带
 
+    /** 模板纸面的长宽比（宽/高）。取景框、以及"没检出标签时按取景框裁剪"都用它。 */
+    fun aspectOf(template: Int = DEFAULT_TEMPLATE): Float {
+        val t = TEMPLATES[template] ?: TEMPLATES.getValue(DEFAULT_TEMPLATE)
+        return (t.wMm / t.hMm).toFloat()
+    }
+
     /**
      * ^A0N/^A@N 实印字高与字号之比。
      *

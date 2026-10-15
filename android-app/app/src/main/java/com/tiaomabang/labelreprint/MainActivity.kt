@@ -765,6 +765,7 @@ class MainActivity : ComponentActivity() {
         val p = LabelPipeline.run(
             prep.working, engine, prep.template, basis = prep.basis,
             ocr = if (withOcr) { b -> ocr.lines(b) } else null,
+            contentRect = prep.frameRect,   // 没检出标签边框时：只认取景框内的内容
         )
         // 两个引擎的 ZPL 分开打标签：ZPLZ 走 DL 模型，ZPL 走混合/zxing，
         // 这样 tools/device_zpl_check.py（对 PC 端 zxing）不会被 DL 的结果串味。

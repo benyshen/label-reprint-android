@@ -77,7 +77,7 @@ $PY tools/demo.py --template 1 --frame full
 
 `--frame`：`label`（照片里有标签，自动找四边形矫正）/ `full`（已裁到标签边）/ `content`（按内容铺满）/ `auto`。
 
-## 进度（V1.0 已封版）
+## 进度（V1.1 已封版 / tag `v1.1`）
 
 - [x] Android 工程：CameraX 拍照/选图 → 引擎 → 可编辑元素列表 → 照片上叠框 → ZPL 预览/复制/导出
 - [x] `BarcodeEngine` 双实现 + `HybridBarcodeEngine`（二维码走 DL、一维码走 zxing）
@@ -87,6 +87,8 @@ $PY tools/demo.py --template 1 --frame full
 - [x] 两端逐字节比对回归（`tools/device_zpl_check.py`，条码-only 3/3；OCR 链路 ±2 点）
 - [x] 真机实拍（TC73，12MP）+ 用户实拍药品追溯码标签 → 打印，几何对齐通过
 - [x] V1.0 之后：拍摄取景指示框（长宽比随模板）、模板3 改为 70×100 纵向标签
+- [x] V1.1：预览画幅与拍照对齐（原先预览被 `FILL_CENTER` 裁边，只见约 54% 横向视野）
+- [x] V1.1：**取景框有语义** —— 没检出标签边框时按框取内容，框外要素丢弃（`label/CaptureFrame.kt`）
 - [ ] V1.1 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
 
 ## 条码引擎：实测短板与混合策略

@@ -68,6 +68,11 @@ object LabelFrame {
         val quad: List<Pair<Double, Double>>?,
         /** 是否为了对上模板方向转了 90° */
         val rotated90: Boolean,
+        /**
+         * 取景框在原图中的矩形 [x0,y0,x1,y1]（像素）。**只在没检出标签四边形时有值**：
+         * 检出时 [working] 已被校正成标签本身，取景框不再代表内容范围。
+         */
+        val frameRect: FloatArray? = null,
         val note: String,
     )
 
@@ -84,12 +89,20 @@ object LabelFrame {
             )
         }
         val quad = detectQuad(bitmap)
-            ?: return Prep(
-                working = bitmap, basis = "full",
-                template = pinnedTemplate ?: ZplGeometry.templateForAspect(bitmap.width, bitmap.height),
+        if (quad == null) {
+            // 没检出标签边框：把**取景框**矩形交给流水线，让它丢掉框外的识别结果。
+            // 为什么不直接裁剪像素：标签长宽比和模板不一致时（比如 2.4:1 的条带放进 3:2 的框），
+            // 按框裁会把标签两端切掉 —— 少识别几个字可以重拍，缺了条码右半截就只能重来。
+            // 丢结果的判据是"要素中心是否在框内"，框外还留着像素但不参与要素表。
+            val tpl = pinnedTemplate ?: ZplGeometry.templateForAspect(bitmap.width, bitmap.height)
+            val r = CaptureFrame.rect(ZplGeometry.aspectOf(tpl), bitmap.width.toFloat(), bitmap.height.toFloat())
+            return Prep(
+                working = bitmap, basis = "full", template = tpl,
                 quad = null, rotated90 = false,
-                note = "没检出标签边框，按整幅图映射（照片需已裁到标签边）",
+                frameRect = r,
+                note = "没检出标签边框：按取景框 ${r[2].toInt() - r[0].toInt()}x${r[3].toInt() - r[1].toInt()} 取内容（框外不参与识别）",
             )
+        }
 
         var warped = warpQuad(bitmap, quad)
         val ar = warped.width.toDouble() / warped.height

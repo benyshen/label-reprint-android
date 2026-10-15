@@ -29,6 +29,12 @@ object LabelPipeline {
         template: Int = ZplGeometry.DEFAULT_TEMPLATE,
         basis: String = "full",
         ocr: ((Bitmap) -> List<TextLine>)? = null,
+        /**
+         * 取景框矩形 [x0,y0,x1,y1]（工作图像素）。非 null 时**框外的识别结果一律丢弃** ——
+         * 用户把标签放进取景框就是在声明"要的是这一块"，框外的背景文字/条码（比如打印机上
+         * 自带的标签）不该进要素表。只在没检出标签四边形时会传（检出时工作图就是标签本身）。
+         */
+        contentRect: FloatArray? = null,
     ): ReprintPlan {
         val imgW = bitmap.width
         val imgH = bitmap.height
@@ -46,7 +52,20 @@ object LabelPipeline {
         val elements = ArrayList<LabelElement>()
         val dropped = ArrayList<String>()
 
+        // 取景框过滤：判据是要素**中心点**是否在框内 —— 压着框边的算框内，
+        // 免得贴边摆放的标签被擦边误杀。
+        fun insideFrame(px: List<Float>): Boolean {
+            val r = contentRect ?: return true
+            val cx = (px[0] + px[2]) / 2f
+            val cy = (px[1] + px[3]) / 2f
+            return cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3]
+        }
+
         for (b in barcodes) {
+            if (!insideFrame(b.px)) {
+                dropped += "条码「${b.text}」在取景框外，丢弃"
+                continue
+            }
             elements += LabelElement(
                 kind = if (b.isTwoD) ElementKind.BARCODE_2D else ElementKind.BARCODE_1D,
                 text = b.text, format = b.format, px = b.px, source = b.source,
@@ -60,6 +79,10 @@ object LabelPipeline {
             // 本身当成文本框，吐出来的常是空串或极低置信的乱码，先按置信度丢掉。
             if (ln.text.isBlank() || ln.conf < MIN_OCR_CONF) {
                 dropped += "「${ln.text}」置信度 ${"%.2f".format(ln.conf)} < $MIN_OCR_CONF，丢弃"
+                continue
+            }
+            if (!insideFrame(ln.px)) {
+                dropped += "「${ln.text}」在取景框外，丢弃"
                 continue
             }
             val hit = elements.firstOrNull { overlapFraction(ln.px, it.px) >= 0.5f }
