@@ -503,6 +503,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onPhoto(bmp: Bitmap, from: String) {
+        // 每次**拍照**都在外部目录留一份带时间戳的备份，事后能核对"当时拍的到底是什么样"：
+        //   /sdcard/Android/data/com.tiaomabang.labelreprint/files/shots/20261015_223344.jpg
+        // 选外部目录的理由：不需要任何权限、卸载即清、手机文件管理器和 USB 都能直接翻。
+        // 用 JPEG(q92) 而不是 PNG：同样 12MP，PNG 约 9MB、JPEG 约 2~3MB；验收看的是内容和几何，
+        // 不是像素级无损。相册选图不备份（原文件本来就在磁盘上）。
+        if (from == "拍照") {
+            val src = bmp
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            Thread {
+                runCatching {
+                    val dir = File(getExternalFilesDir(null), "shots").apply { mkdirs() }
+                    val f = File(dir, "$stamp.jpg")
+                    java.io.FileOutputStream(f).use { src.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+                    Log.i(TAG, "PHOTO >>> backup ${f.absolutePath} " +
+                        "${src.width}x${src.height} ${f.length() / 1024}KB")
+                }.onFailure { Log.e(TAG, "PHOTO backup failed", it) }
+            }.start()
+        }
         // 调试口：把**原图**（缩放前）落到应用私有目录。验证"取景框所见 == 拍到的照片"时
         // 这是唯一可信的对照物 —— 拿屏幕截图去目测会被预览自身的缩放骗到。
         // 取回：adb shell "run-as com.tiaomabang.labelreprint cat files/last_shot.png" > shot.png

@@ -89,6 +89,7 @@ $PY tools/demo.py --template 1 --frame full
 - [x] V1.0 之后：拍摄取景指示框（长宽比随模板）、模板3 改为 70×100 纵向标签
 - [x] V1.1：预览画幅与拍照对齐（原先预览被 `FILL_CENTER` 裁边，只见约 54% 横向视野）
 - [x] V1.1：**取景框有语义** —— 没检出标签边框时按框取内容，框外要素丢弃（`label/CaptureFrame.kt`）
+- [x] V1.1：每次拍照自动备份原图到 `/sdcard/Android/data/com.tiaomabang.labelreprint/files/shots/`（JPEG q92）
 - [ ] V1.1 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
 
 ## 条码引擎：实测短板与混合策略
