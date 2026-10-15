@@ -14,8 +14,8 @@ android {
         applicationId = "com.tiaomabang.labelreprint"
         minSdk = 34                  // TC73 = Android 14
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         ndk { abiFilters += "arm64-v8a" }
     }
 

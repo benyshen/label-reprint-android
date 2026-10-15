@@ -17,7 +17,7 @@ MM_PER_INCH = 25.4
 TEMPLATES = {
     1: {"name": "模板1", "w_mm": 60.0, "h_mm": 40.0, "dpi": 203},
     2: {"name": "模板2", "w_mm": 70.0, "h_mm": 70.0, "dpi": 203},
-    3: {"name": "模板3", "w_mm": 70.0, "h_mm": 40.0, "dpi": 203},
+    3: {"name": "模板3", "w_mm": 70.0, "h_mm": 100.0, "dpi": 203},
 }
 DEFAULT_TEMPLATE = 1
 

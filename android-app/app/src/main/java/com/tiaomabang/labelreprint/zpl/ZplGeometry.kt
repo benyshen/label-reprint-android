@@ -15,7 +15,7 @@ object ZplGeometry {
     val TEMPLATES: Map<Int, Template> = linkedMapOf(
         1 to Template(1, "模板1", 60.0, 40.0, 203),
         2 to Template(2, "模板2", 70.0, 70.0, 203),
-        3 to Template(3, "模板3", 70.0, 40.0, 203),
+        3 to Template(3, "模板3", 70.0, 100.0, 203),
     )
     const val DEFAULT_TEMPLATE = 1
 

@@ -1,5 +1,6 @@
 package com.tiaomabang.labelreprint.ui
 
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -44,6 +47,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -71,14 +75,52 @@ fun CameraPane(
     status: String,
     busy: Boolean,
     canShoot: Boolean,
+    template: Int,
+    onTemplate: (Int) -> Unit,
     onShoot: () -> Unit,
     onPick: () -> Unit,
     onRunSelfTest: () -> Unit,
 ) {
+    // 相机预览/拍照都固定 4:3；屏幕上显示的宽高比取决于持机方向：竖持是 3:4、横持是 4:3。
+    // 容器必须照这个比例约束，否则 FIT_CENTER 会留黑边、框就对不上照片范围。
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cameraViewAspect = if (landscape) 4f / 3f else 3f / 4f
     Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("标签复刻：拍一张标签照片，识别条码与文字，生成 ZPL", style = MaterialTheme.typography.bodySmall)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        // 预览容器按相机显示比例约束成 3:4（竖持时的 4:3 画幅）：
+        // 相机侧预览与拍照都固定 4:3、PreviewView 用 FIT_CENTER 不裁切，
+        // 所以这个矩形就是**照片的实际范围** —— 取景框里看到的和拍下来的才是同一视野。
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Box(Modifier.aspectRatio(cameraViewAspect)) {
+                AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+                // 取景指示框：长宽比 = 当前模板，所以框就是在告诉用户"该拍成什么形状、该占多大"
+                CaptureGuide(
+                    aspect = aspectOfTemplate(template),
+                    hint = "标签四边对进框内 · 尽量占满",
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // 模板切换搬到拍照页：形状不对时先在这改，不用拍完再去结果页点
+                Row(
+                    Modifier.align(Alignment.TopStart).padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ZplGeometry.TEMPLATES.values.forEach { t ->
+                        val sel = t.id == template
+                        Text(
+                            "${t.label} ${t.wMm.toInt()}×${t.hMm.toInt()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (sel) MaterialTheme.colorScheme.onPrimary else Color.White,
+                            modifier = Modifier
+                                .background(
+                                    if (sel) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.45f),
+                                    RoundedCornerShape(5.dp),
+                                )
+                                .clickable { onTemplate(t.id) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                        )
+                    }
+                }
+            }
         }
         Text(status, style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

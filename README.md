@@ -1,7 +1,7 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.0（2026-10-15 封版）** — 版本记录见 `docs/V1.0-版本记录.md`；
-封版回归 `python tools/regress.py`（退出码 0 = 通过，23 项）。
+**当前版本：V1.1（2026-10-15）** — 版本记录见 `docs/V1.0-版本记录.md`、`docs/V1.1-版本记录.md`；
+封版回归 `python tools/regress.py`（退出码 0 = 通过）。
 
 拍照 ↓ 识别 ↓ 重新生成 ZPL ↓ 打印。目标是「看到一张标签，把它重新打出来」。
 
@@ -51,7 +51,8 @@ android-app/       (第 2 步) Kotlin + Compose
 4. **基准已是整张标签时，映射不能再加自己的边距**：加了 `MARGIN/TOP_OFFSET` 会整体偏移 16~22 点。
 5. **条码下方的人眼可读串（HRI）不能既当条码又当文字打两遍**：内容与条码一致、位于条码正下方且横向重叠
    → 归并成 `^BC...,Y`（`elements[].hri = true`），并从文字元素里删除。
-6. **纸面尺寸＝模板唯一真源**：`zpl_geometry.TEMPLATES`（模板1 60×40、模板2 70×70、模板3 70×40，203dpi）。
+6. **纸面尺寸＝模板唯一真源**：`zpl_geometry.TEMPLATES`（模板1 60×40 = 480×320、模板2 70×70 = 559×559、
+   模板3 70×100 = 559×799，203dpi；模板3 是**纵向**标签）。
    两端都从这里推 `^PW/^LL/^FB/布局`，不许在别处写尺寸字面量。
 7. 取整用 `round_half`（半进上），Python 的 `round()` 是银行家舍入，在 .5 边界会和 Kotlin `Math.round` 差 1 点。
 8. **`^BY` 模块宽下限 2 点**（1 点 = 0.125mm 在 203dpi 下印糊；ISO 对 Code128 要求 X ≥ 0.19mm）。
@@ -85,7 +86,8 @@ $PY tools/demo.py --template 1 --frame full
 - [x] 打印：Zebra Link-OS 蓝牙直出（secure→insecure 降级），真机 TC73 → ZR668 实测通
 - [x] 两端逐字节比对回归（`tools/device_zpl_check.py`，条码-only 3/3；OCR 链路 ±2 点）
 - [x] 真机实拍（TC73，12MP）+ 用户实拍药品追溯码标签 → 打印，几何对齐通过
-- [ ] V1.0 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）、按实际标签尺寸补模板
+- [x] V1.0 之后：拍摄取景指示框（长宽比随模板）、模板3 改为 70×100 纵向标签
+- [ ] V1.1 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
 
 ## 条码引擎：实测短板与混合策略
 

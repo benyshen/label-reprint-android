@@ -145,6 +145,9 @@ class MainActivity : ComponentActivity() {
      * setIntent() 不触发 Compose 重组，钩子会静默不生效。
      */
     private var printWanted by mutableStateOf(false)
+
+    /** `--es savephoto 1`：把拍摄原图落到 files/last_shot.png（验证取景是否所见即所得） */
+    private var savePhoto by mutableStateOf(false)
     private var printSeq by mutableStateOf(0)
 
     /**
@@ -252,6 +255,10 @@ class MainActivity : ComponentActivity() {
             printWanted = true
             Log.i(TAG, "PRINT >>> 注入自动打印标志")
         }
+        if (i?.hasExtra("savephoto") == true) {
+            savePhoto = true
+            Log.i(TAG, "PHOTO >>> 注入保存原图标志")
+        }
         // 裸 MAC 补 BT: 前缀，裸 IP 补 TCP:（ViewModel 那一侧不再猜，统一在这里归一）
         if (i?.getStringExtra("tcp") != null) printerSpec = "TCP:${i.getStringExtra("tcp")}"
     }
@@ -299,6 +306,9 @@ class MainActivity : ComponentActivity() {
                 status = status,
                 busy = busy,
                 canShoot = cameraReady,
+                template = template,
+                // 拍照页选模板 = 先定标签形状（取景框跟着变），所以也要 pin，别被自动选覆盖
+                onTemplate = { t -> templatePinned = true; template = t },
                 onShoot = ::shoot,
                 onPick = {
                     pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -401,12 +411,22 @@ class MainActivity : ComponentActivity() {
             try {
                 val prov = future.get()
                 provider = prov
-                val preview = Preview.Builder().build()
+                // 预览必须与拍照用**同一个画幅**（都是 4:3）：否则 PreviewView 会按自己的比例
+                // 裁掉两边去填满容器，而 ImageCapture 拿到的是完整 4:3 —— 用户看到的就是
+                // "取景框里的内容跟拍下来的照片不一样"。配合 scaleType=FIT_CENTER（不裁切）
+                // 与容器 aspectRatio=3:4，框内所见 == 拍到的画面。
+                // 另外拍照侧要 4:3 是为了像素：一维码至少 4px/模块，标签在照片里得够宽。
+                val aspect = AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                val previewSelector = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(aspect)
+                    .build()
+                val preview = Preview.Builder()
+                    .setResolutionSelector(previewSelector)
+                    .build()
                     .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                // 一维码要靠像素：至少 4px/模块，一张 70mm 宽的标签在照片里得有 ~120px 以上，
-                // 所以取设备支持的最高分辨率（MAXIMIZE_QUALITY + HIGHEST_AVAILABLE）。
+                previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
                 val selector = ResolutionSelector.Builder()
-                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setAspectRatioStrategy(aspect)
                     .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
                     .build()
                 val capture = ImageCapture.Builder()
@@ -418,7 +438,16 @@ class MainActivity : ComponentActivity() {
                 prov.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
                 cameraReady = true
                 status = "相机就绪"
-                Log.i(TAG, "CAMERA >>> bound（最高分辨率档）")
+                // 把两侧实际选中的分辨率打进日志：预览与拍照画幅不一致时（取景框 ≠ 照片）
+                // 只有这两行能看出来，别靠肉眼比对
+                val pr = preview.resolutionInfo?.resolution
+                val cr = capture.resolutionInfo?.resolution
+                Log.i(TAG, "CAMERA >>> bound｜preview=${pr?.width}x${pr?.height}" +
+                    " capture=${cr?.width}x${cr?.height} scaleType=${previewView.scaleType}")
+                if (pr != null && kotlin.math.abs(pr.width.toFloat() / pr.height - 4f / 3f) > 0.01f) {
+                    Log.w(TAG, "CAMERA >>> 预览画幅 ${pr.width}x${pr.height} 不是 4:3（aspect fallback），" +
+                        "取景框与照片会有偏差")
+                }
             } catch (t: Throwable) {
                 cameraReady = false
                 status = "相机不可用：${t.javaClass.simpleName}: ${t.message}"
@@ -474,6 +503,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onPhoto(bmp: Bitmap, from: String) {
+        // 调试口：把**原图**（缩放前）落到应用私有目录。验证"取景框所见 == 拍到的照片"时
+        // 这是唯一可信的对照物 —— 拿屏幕截图去目测会被预览自身的缩放骗到。
+        // 取回：adb shell "run-as com.tiaomabang.labelreprint cat files/last_shot.png" > shot.png
+        if (savePhoto) {
+            runCatching {
+                val f = File(filesDir, "last_shot.png")
+                java.io.FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                Log.i(TAG, "PHOTO >>> saved ${f.absolutePath} ${bmp.width}x${bmp.height}")
+            }.onFailure { Log.e(TAG, "PHOTO save failed", it) }
+        }
         // 12MP 原图（4080x3060 = 50MB ARGB）在 Java/CV 两侧都要各拷几份，且没人用得上这么多像素：
         // 条码只要 4px/模块。上限 8MP，既保住条码细节又省内存与 OpenCV 时间。
         val px = bmp.width.toLong() * bmp.height
