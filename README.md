@@ -1,7 +1,11 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.3（2026-10-17）** — 版本记录见 `docs/V1.0-版本记录.md`、`V1.1-`、`V1.2-`、`V1.3-`；
-封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+**当前版本：V1.3（2026-10-17，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
+细节见 `docs/V1.0~V1.3-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+
+**装机包**：`out/label-reprint-V1.3-release.apk`（434 MiB，模型全部内嵌，无需联网）。
+签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。
+V1.3 起从 debug 签名换成正式密钥，**覆盖安装旧版会失败，需先 `adb uninstall`**。
 
 拍照 ↓ 识别 ↓ 重新生成 ZPL ↓ 打印。目标是「看到一张标签，把它重新打出来」。
 
@@ -99,7 +103,8 @@ $PY tools/demo.py --template 1 --frame full
       `^FT` 锚点含 4 模块 quiet zone，框底会比实印下缘高 20~60 点），并修掉"文字压在条码里反被跳过"的漏判
 - [x] V1.3：**打印机状态卡片** —— 灯色四档（未连接/连接中/已连接/失败）、型号+地址、实时状态
       每 5s 自动刷新（`status()` 与打印共用一把锁，避免读写交错）、设备 chip 高亮选中、刷新/重连按钮
-- [ ] V1.3 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
+- [x] V1.3：正式密钥签名的完整安装包（模型 153MB 条码 + 16MB OCR 全部内嵌，`keystore.properties` 定签名）
+- [ ] V1.3 之后：打后自动拍照比对验收、APK 体积（434 MiB → 裁掉 19MB 自检样图 / 评估 SNPE 库）
 
 ## 条码引擎：实测短板与混合策略
 
