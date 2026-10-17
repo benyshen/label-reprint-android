@@ -54,9 +54,13 @@ import com.tiaomabang.labelreprint.print.ZebraGateway
 import com.tiaomabang.labelreprint.print.listPairedDevices
 import com.tiaomabang.labelreprint.ui.CameraPane
 import com.tiaomabang.labelreprint.ui.ElementEdit
+import com.tiaomabang.labelreprint.ui.LinkPhase
+import com.tiaomabang.labelreprint.ui.PrinterUi
 import com.tiaomabang.labelreprint.ui.ResultPane
 import com.tiaomabang.labelreprint.zpl.ZplGeometry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -139,6 +143,14 @@ class MainActivity : ComponentActivity() {
     /** 目标打印机："BT:<MAC>" 或 "TCP:<IP>"。冷启时若无注入则为 null，由界面选已配对设备。 */
     private var printerSpec by mutableStateOf<String?>(null)
     private var printerState by mutableStateOf("未连接打印机（先用系统蓝牙配对打印机）")
+
+    /**
+     * 打印机状态（界面唯一真源）。与 [printerState] 并存：后者只用来打日志/兼容注入路径，
+     * 界面上的一切（灯色、型号、实时状态、"几秒前"）都从这份快照推。
+     */
+    private var printerUi by mutableStateOf(PrinterUi())
+    /** 发送中（避免轮询在打印时抢同一条链路） */
+    private var printing by mutableStateOf(false)
     private var paired by mutableStateOf<List<PairedDevice>>(emptyList())
 
     /**
@@ -165,6 +177,10 @@ class MainActivity : ComponentActivity() {
                     paired.joinToString { "${it.name}@${it.mac}" })
             } else {
                 printerState = "缺少蓝牙权限：${missing.joinToString()}"
+                printerUi = printerUi.copy(
+                    phase = LinkPhase.ERROR,
+                    detail = "缺少蓝牙权限：${missing.joinToString()}",
+                )
                 Log.w(TAG, "PRINT >>> 蓝牙权限被拒：${missing.joinToString()}")
             }
         }
@@ -297,9 +313,14 @@ class MainActivity : ComponentActivity() {
                 onCopyZpl = { copy(p.zpl) },
                 onSaveZpl = { saveZpl(p) },
                 onPrint = { printZpl(p.zpl) },
-                printerState = printerState,
+                printerUi = printerUi,
                 paired = paired,
-                onChoosePrinter = { d -> printerSpec = "BT:${d.mac}" },
+                onChoosePrinter = { d ->
+                    printerSpec = "BT:${d.mac}"
+                    printerUi = printerUi.copy(phase = LinkPhase.CONNECTING, target = d.mac, name = d.name)
+                },
+                onRefreshPrinter = ::refreshPrinterStatus,
+                onReconnectPrinter = ::reconnectPrinter,
             )
         } else {
             CameraPane(
@@ -340,6 +361,17 @@ class MainActivity : ComponentActivity() {
             connectPrinter(spec)
         }
 
+        // 连着的时候每 5s 问一次状态：缺纸/开盖/暂停都是"连得上但打不了"，
+        // 只在连接那一刻读一次的话，用户换了纸或打开盖子界面上永远显示"就绪"。
+        // 打印中/识别中跳过（同一条链路不要并发写）。
+        LaunchedEffect(printerUi.phase) {
+            if (printerUi.phase != LinkPhase.CONNECTED) return@LaunchedEffect
+            while (isActive) {
+                delay(5_000)
+                if (!printing && !busy) refreshPrinterStatus()
+            }
+        }
+
         // 自动打印（钩子）：等 plan 出来再打。键里必须带 plan —— 只键 printWanted 的话，
         // flag 在 onCreate 就置位、那时还没有 plan，effect 立即返回且再也不会重跑。
         LaunchedEffect(plan, printWanted) {
@@ -354,53 +386,116 @@ class MainActivity : ComponentActivity() {
 
     private fun connectPrinter(spec: String) {
         printerState = "连接中…（$spec）"
+        // 名字优先从配对表里补（注入 MAC 时界面只有地址，没有名字会显示成纯 MAC）
+        val known = paired.firstOrNull { it.mac.equals(addrOf(spec), ignoreCase = true) }?.name
+        printerUi = printerUi.copy(
+            phase = LinkPhase.CONNECTING,
+            target = addrOf(spec),
+            name = printerUi.name.ifBlank { known ?: "" },
+            detail = "正在建立连接…",
+        )
         lifecycleScope.launch {
             when (val r = printer.connect(spec)) {
                 is GatewayResult.Ok -> {
                     val st = printer.status()
                     printerState = "已连接 ${r.info} · $st"
+                    printerUi = printerUi.copy(
+                        phase = LinkPhase.CONNECTED, model = r.info, detail = st,
+                        at = System.currentTimeMillis(),
+                    )
                     Log.i(TAG, "PRINT >>> 已连接 ${r.info}（$spec）状态=$st")
                 }
                 is GatewayResult.Err -> {
                     printerState = "连接失败：${r.reason}"
+                    printerUi = printerUi.copy(phase = LinkPhase.ERROR, detail = r.reason, at = 0L)
                     Log.w(TAG, "PRINT >>> 连接失败 $spec：${r.reason}")
                 }
             }
         }
     }
 
+    /** 主动问一次打印机当前状态（换纸后点"刷新状态"就走这里，不重连） */
+    private fun refreshPrinterStatus() {
+        if (printerUi.phase != LinkPhase.CONNECTED || printing || busy) return
+        lifecycleScope.launch {
+            val st = printer.status()
+            // 掉线时 status() 返回的是人话原因；识别成掉线并把灯改成红，而不是继续显示"就绪"
+            val alive = printer.isConnected() && !st.contains("未连接")
+            printerUi = printerUi.copy(
+                phase = if (alive) LinkPhase.CONNECTED else LinkPhase.ERROR,
+                detail = st,
+                at = System.currentTimeMillis(),
+            )
+            Log.i(TAG, "PRINT >>> 状态刷新：$st（alive=$alive）")
+        }
+    }
+
+    private fun reconnectPrinter() {
+        val spec = printerSpec
+        if (spec == null) {
+            printerUi = printerUi.copy(phase = LinkPhase.ERROR, detail = "还没选打印机：点上方设备名选一台")
+            return
+        }
+        connectPrinter(spec)
+    }
+
+    /** "BT:AA:BB:.." -> "AA:BB:.."；"TCP:1.2.3.4:9100" 原样显示 */
+    private fun addrOf(spec: String): String =
+        spec.removePrefix("BT:").removePrefix("bt:").removePrefix("TCP:").removePrefix("tcp:")
+
     private fun printZpl(zpl: String) {
         val spec = printerSpec
         if (spec == null && !printer.isConnected()) {
             printerState = "还没选打印机：点上方设备名选一台"
+            printerUi = printerUi.copy(
+                phase = LinkPhase.ERROR, target = "", detail = "还没选打印机：点设备名选一台",
+            )
             Log.w(TAG, "PRINT >>> 没有目标打印机，未发送")
             return
         }
         lifecycleScope.launch {
-            if (!printer.isConnected()) {
-                when (val r = printer.connect(spec!!)) {
+            printing = true
+            try {
+                if (!printer.isConnected()) {
+                    when (val r = printer.connect(spec!!)) {
+                        is GatewayResult.Ok -> {
+                            printerState = "已连接 ${r.info}"
+                            printerUi = printerUi.copy(
+                                phase = LinkPhase.CONNECTED, model = r.info,
+                                detail = "已重新连接", at = System.currentTimeMillis(),
+                            )
+                            Log.i(TAG, "PRINT >>> 已连接 ${r.info}")
+                        }
+                        is GatewayResult.Err -> {
+                            printerState = "连接失败：${r.reason}"
+                            printerUi = printerUi.copy(
+                                phase = LinkPhase.ERROR, detail = r.reason, at = 0L,
+                            )
+                            Log.w(TAG, "PRINT >>> 连接失败：${r.reason}")
+                            return@launch
+                        }
+                    }
+                }
+                // 发送结果也必须进日志：只记 ZPL 的话，"日志成功、纸上一片空白" 完全看不出来
+                Log.i(TAG, "PRINT >>> 发往 $spec，ZPL ${zpl.length} 字节")
+                when (val r = printer.printZpl(zpl)) {
                     is GatewayResult.Ok -> {
-                        printerState = "已连接 ${r.info}"
-                        Log.i(TAG, "PRINT >>> 已连接 ${r.info}")
+                        printerState = "已发送（${r.info}）"
+                        printerUi = printerUi.copy(
+                            phase = LinkPhase.CONNECTED, detail = "已发送 · ${r.info}",
+                            at = System.currentTimeMillis(),
+                        )
+                        Log.i(TAG, "PRINT >>> 成功 ${r.info}｜$spec")
                     }
                     is GatewayResult.Err -> {
-                        printerState = "连接失败：${r.reason}"
-                        Log.w(TAG, "PRINT >>> 连接失败：${r.reason}")
-                        return@launch
+                        printerState = "打印失败：${r.reason}"
+                        // 打印机缺纸/开盖/暂停是"链路通但打不了"，灯要变红而不是继续绿的
+                        printerUi = printerUi.copy(phase = LinkPhase.ERROR, detail = r.reason, at = 0L)
+                        Log.w(TAG, "PRINT >>> 失败 ${r.reason}｜$spec")
                     }
                 }
-            }
-            // 发送结果也必须进日志：只记 ZPL 的话，"日志成功、纸上一片空白" 完全看不出来
-            Log.i(TAG, "PRINT >>> 发往 $spec，ZPL ${zpl.length} 字节")
-            when (val r = printer.printZpl(zpl)) {
-                is GatewayResult.Ok -> {
-                    printerState = "已发送（${r.info}）"
-                    Log.i(TAG, "PRINT >>> 成功 ${r.info}｜$spec")
-                }
-                is GatewayResult.Err -> {
-                    printerState = "打印失败：${r.reason}"
-                    Log.w(TAG, "PRINT >>> 失败 ${r.reason}｜$spec")
-                }
+            } finally {
+                printing = false
             }
         }
     }

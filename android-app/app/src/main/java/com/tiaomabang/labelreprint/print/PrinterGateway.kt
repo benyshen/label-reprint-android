@@ -183,19 +183,23 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
     }
 
     override suspend fun status(): String = withContext(sdk) {
-        val c = conn ?: return@withContext "未连接"
-        runCatching {
-            val st: PrinterStatus = (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus
-            when {
-                st.isReadyToPrint -> "就绪"
-                st.isPaused -> "已暂停（请在打印机上恢复）"
-                st.isHeadOpen -> "打印头未合上"
-                st.isPaperOut -> "缺纸（请装纸后校准）"
-                st.isReceiveBufferFull -> "缓冲已满，稍后再发"
-                st.isRibbonOut -> "碳带用尽"
-                else -> "状态未知"
-            }
-        }.getOrElse { humanReason(it) }
+        // 与打印共用同一把锁：轮询（每 5s 一次）绝不能插进一次 ZPL 发送中间去写同一条链路，
+        // 否则蓝牙通道上的读写会交错，成纸可能只打一半。
+        lock.withLock {
+            val c = conn ?: return@withLock "未连接"
+            runCatching {
+                val st: PrinterStatus = (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus
+                when {
+                    st.isReadyToPrint -> "就绪"
+                    st.isPaused -> "已暂停（请在打印机上恢复）"
+                    st.isHeadOpen -> "打印头未合上"
+                    st.isPaperOut -> "缺纸（请装纸后校准）"
+                    st.isReceiveBufferFull -> "缓冲已满，稍后再发"
+                    st.isRibbonOut -> "碳带用尽"
+                    else -> "状态未知"
+                }
+            }.getOrElse { humanReason(it) }
+        }
     }
 
     override suspend fun printZpl(zpl: String): GatewayResult = withContext(sdk) {

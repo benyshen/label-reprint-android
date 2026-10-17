@@ -1,6 +1,6 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.2（2026-10-17）** — 版本记录见 `docs/V1.0-版本记录.md`、`V1.1-`、`V1.2-`；
+**当前版本：V1.3（2026-10-17）** — 版本记录见 `docs/V1.0-版本记录.md`、`V1.1-`、`V1.2-`、`V1.3-`；
 封版回归 `python tools/regress.py`（退出码 0 = 通过）。
 
 拍照 ↓ 识别 ↓ 重新生成 ZPL ↓ 打印。目标是「看到一张标签，把它重新打出来」。
@@ -81,7 +81,7 @@ $PY tools/demo.py --template 1 --frame full
 
 `--frame`：`label`（照片里有标签，自动找四边形矫正）/ `full`（已裁到标签边）/ `content`（按内容铺满）/ `auto`。
 
-## 进度（V1.2 已封版 / tag `v1.2`）
+## 进度（V1.3 已封版 / tag `v1.3`）
 
 - [x] Android 工程：CameraX 拍照/选图 → 引擎 → 可编辑元素列表 → 照片上叠框 → ZPL 预览/复制/导出
 - [x] `BarcodeEngine` 双实现 + `HybridBarcodeEngine`（二维码走 DL、一维码走 zxing）
@@ -97,7 +97,9 @@ $PY tools/demo.py --template 1 --frame full
 - [x] V1.2：界面配色对齐 zebra.com（黑底 + `#A8F931` 荧光绿强调）
 - [x] V1.2：**二维码与其下方要素净空 = 通用 6 点 + 1mm = 14 点**；净空改按"实印下缘"算（`^BQ` 的
       `^FT` 锚点含 4 模块 quiet zone，框底会比实印下缘高 20~60 点），并修掉"文字压在条码里反被跳过"的漏判
-- [ ] V1.2 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
+- [x] V1.3：**打印机状态卡片** —— 灯色四档（未连接/连接中/已连接/失败）、型号+地址、实时状态
+      每 5s 自动刷新（`status()` 与打印共用一把锁，避免读写交错）、设备 chip 高亮选中、刷新/重连按钮
+- [ ] V1.3 之后：打后自动拍照比对验收、APK 体积（450MiB → release+minify）
 
 ## 条码引擎：实测短板与混合策略
 

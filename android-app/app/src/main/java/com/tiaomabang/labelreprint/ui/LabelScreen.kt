@@ -162,9 +162,11 @@ fun ResultPane(
     onCopyZpl: () -> Unit,
     onSaveZpl: () -> Unit,
     onPrint: () -> Unit,
-    printerState: String,
+    printerUi: PrinterUi,
     paired: List<PairedDevice>,
     onChoosePrinter: (PairedDevice) -> Unit,
+    onRefreshPrinter: () -> Unit,
+    onReconnectPrinter: () -> Unit,
 ) {
     var editing by remember { mutableStateOf<Int?>(null) }
     Column(
@@ -247,21 +249,14 @@ fun ResultPane(
         // ---- 打印（Zebra Link-OS 蓝牙 / 网口） ----
         HorizontalDivider()
         Text("打印", style = MaterialTheme.typography.titleSmall)
-        Text(printerState, style = MaterialTheme.typography.bodySmall)
-        if (paired.isEmpty()) {
-            Text("没有已配对的蓝牙设备：先去系统设置里配对打印机（Android 不允许 App 自动配对）",
-                style = MaterialTheme.typography.bodySmall)
-        } else {
-            // 列出已配对设备供选择；顺序与 print.listPairedDevices 一致（按名字排序）
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                paired.forEach { d ->
-                    AssistChip(
-                        onClick = { onChoosePrinter(d) },
-                        label = { Text(d.name, maxLines = 1, softWrap = false) },
-                    )
-                }
-            }
-        }
+        PrinterCard(
+            ui = printerUi,
+            paired = paired,
+            busy = busy,
+            onChoose = onChoosePrinter,
+            onRefresh = onRefreshPrinter,
+            onReconnect = onReconnectPrinter,
+        )
         Button(onClick = onPrint, enabled = !busy) { Text("打印这张标签") }
         Card(Modifier.fillMaxWidth()) {
             SelectionContainer {
