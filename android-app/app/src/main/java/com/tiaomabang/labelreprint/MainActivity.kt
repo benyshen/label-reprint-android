@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import com.tiaomabang.labelreprint.ui.theme.ZebraTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -207,7 +208,7 @@ class MainActivity : ComponentActivity() {
             "printer=$printerSpec print=$printWanted")
 
         setContent {
-            MaterialTheme {
+            ZebraTheme {
                 if (!hasCameraPermission()) {
                     Column(Modifier.fillMaxSize().padding(16.dp)) {
                         Text("需要相机权限才能拍照识别；也可先用「相册」选照片")

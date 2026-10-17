@@ -1,5 +1,7 @@
 package com.tiaomabang.labelreprint.zpl
 
+import kotlin.math.roundToInt
+
 /**
  * 标签/ZPL 几何 —— 唯一真源。
  *
@@ -63,6 +65,18 @@ object ZplGeometry {
      * 原图上就只差 3~4 点（0.4mm），映射到点阵后 ^FT 一下就把文字贴到条上（用户报"重叠"）。
      */
     const val MIN_TEXT_BARCODE_GAP = 6
+
+    /**
+     * QR（二维）码与**下方**要素的净空 = 通用净空 + 1mm（203dpi 下 1mm ≈ 8 点 → 合计 14 点 ≈ 1.75mm）。
+     *
+     * 为什么单独给二维码加一格：^BQ 的 quiet zone 靠模型自身的 4 个模块（mag4 时约 8 点），
+     * 印出来后下缘再被文字/HRI 蹭掉一点，安静区一破，扫描器锁定位图就变难。
+     * 一维码的 HRI 本来就该贴着条（那是码制规范），所以只对二维码加这一毫米。
+     */
+    val QR_TEXT_GAP: Int get() = MIN_TEXT_BARCODE_GAP + mm2dots(QR_EXTRA_GAP_MM)
+
+    /** 二维码额外净空（毫米）。单独抽出来，改数值不用碰逻辑。 */
+    const val QR_EXTRA_GAP_MM = 1.0
 
     /** 文字行贴着条码时向下推，直到留出净空（不改横向位置，避免破坏与其它要素的相对关系） */
     const val DECOLLIDE_STEP_LIMIT = 40
@@ -142,6 +156,25 @@ object ZplGeometry {
     fun anchorDyBarcode1d(barHeight: Int): Int = barHeight
 
     fun anchorDyQr(blackH: Int, magnification: Int): Int = blackH + 4 * magnification
+
+    /** QR 实印参数：mag、黑模块高、^FT 原点到符号下缘的偏移 */
+    data class QrLayout(val mag: Int, val blackH: Int, val anchorDy: Int)
+
+    /**
+     * 算二维码**实印**尺寸。抽成一处给 [ZplBuilder] 净空计算双方共用 —— 两处各写一份 mag 算法
+     * 迟早漂移，而净空算错就是"文字压到二维码上"。
+     *
+     * 关键点：`^BQ` 的 ^FT 锚点是符号（含 4 个模块 quiet zone）的**下缘**，所以"元素框底"
+     * 不等于"印出来的底" —— 框底通常比实印下缘高 20~60 点，只按框底加净空会真的重叠。
+     */
+    fun qrLayout(x: Int, w: Float, text: String, labelW: Int): QrLayout {
+        val modules = qrModulesForText(text)
+        val usable = labelW - MARGIN - x
+        var mag = (w / modules).roundToInt().coerceIn(2, 10)
+        while (mag > 2 && modules * mag > usable) mag -= 1
+        val blackH = modules * mag
+        return QrLayout(mag, blackH, anchorDyQr(blackH, mag))
+    }
 
     /**
      * Code128 模块数 = 11 × 符号数 + 35（起始符 + 校验符 + 终止符）。

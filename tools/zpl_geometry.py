@@ -28,6 +28,9 @@ MIN_MODULE_DOTS = 2.0
 #: 文字与条码的最小净空（点）。实测：条码下方的人眼可读串离条码只有 3~4 点（0.4mm），
 #: 映射到点阵后加上"下边缘锚定"就会贴到条上（用户报"重叠"）。
 MIN_TEXT_BARCODE_GAP = 6
+#: 二维码（QR）额外净空（mm）：QR 的 quiet zone 只有自身 4 个模块，印出来再被下方文字蹭一下
+#: 就锁不住定位图。一维码的 HRI 反而该贴条，所以只给二维码加。
+QR_EXTRA_GAP_MM = 1.0
 DECOLLIDE_STEP_LIMIT = 40
 
 
@@ -54,6 +57,10 @@ def round_half(v):
 
 def mm2dots(mm, dpi=203):
     return round_half(mm * dpi / MM_PER_INCH)
+
+
+#: 二维码与下方要素的净空（点）= 通用净空 + 1mm（203dpi → 14 点 ≈ 1.75mm）
+QR_TEXT_GAP = MIN_TEXT_BARCODE_GAP + mm2dots(QR_EXTRA_GAP_MM)
 
 
 def dims(template=DEFAULT_TEMPLATE):

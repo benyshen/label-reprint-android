@@ -67,6 +67,10 @@ fun CaptureGuide(aspect: Float, hint: String, modifier: Modifier = Modifier) {
                 Triple(Offset(l + fw, t + fh), Offset(l + fw - arm, t + fh), Offset(l + fw, t + fh - arm)),
             )
             corners.forEach { (c, a, b) ->
+                // 黑底 + 绿线：白纸上的亮绿单线几乎看不见，站点又只用绿一个字，
+                // 所以靠"描边"而不是换颜色来保证对比度
+                drawLine(Color.Black, c, a, sw + 3.dp.toPx())
+                drawLine(Color.Black, c, b, sw + 3.dp.toPx())
                 drawLine(accent, c, a, sw)
                 drawLine(accent, c, b, sw)
             }
@@ -76,7 +80,9 @@ fun CaptureGuide(aspect: Float, hint: String, modifier: Modifier = Modifier) {
             val cy = t + fh / 2f
             val cr = minOf(fw, fh) * 0.05f
             val thin = 1.5.dp.toPx()
-            val cross = Color.White.copy(alpha = 0.75f)
+            val cross = Color.White.copy(alpha = 0.85f)
+            drawLine(Color.Black, Offset(cx - cr, cy), Offset(cx + cr, cy), thin + 2.dp.toPx())
+            drawLine(Color.Black, Offset(cx, cy - cr), Offset(cx, cy + cr), thin + 2.dp.toPx())
             drawLine(cross, Offset(cx - cr, cy), Offset(cx + cr, cy), thin)
             drawLine(cross, Offset(cx, cy - cr), Offset(cx, cy + cr), thin)
         }

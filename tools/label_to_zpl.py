@@ -333,7 +333,17 @@ def build(image_path, template=G.DEFAULT_TEMPLATE, det=None, rec=None, frame="au
             "decollided": decollided, "overflow": overflow, "zpl": zpl}
 
 
-def decollide(elements, template):
+def _printed_bottom(b, template):
+    """条码**实印下缘**（点）。与 emit_zpl 的锚点算法同源：一维码 = 顶 + 条高；
+    二维码 = 顶 + 黑模块高 + 4 个模块 quiet zone（框底 dots[3] 因此会明显偏小）。"""
+    p = choose_barcode_params(dict(b), template, 1.0)
+    top = G.round_half(b["dots"][1])
+    if b["kind"] == "barcode2d":
+        return top + G.anchor_dy("barcode2d", black_h=p["black_h"], magnification=p["magnification"])
+    return top + G.anchor_dy("barcode1d", bar_height=p["bar_height"])
+
+
+def decollide(elements, template=G.DEFAULT_TEMPLATE):
     """文字与条码的净空（与 Kotlin LabelPipeline.deCollide 1:1）。
 
     源图里"条码下方的人眼可读串"本来就只离条码 3~4 点（0.4mm），映射到点阵后再加上 ^FT
@@ -352,9 +362,14 @@ def decollide(elements, template):
             hov = min(b["dots"][2], e["dots"][2]) - max(b["dots"][0], e["dots"][0])
             if hov <= 0.2 * (e["dots"][2] - e["dots"][0]):
                 continue
-            if e["dots"][1] < b["dots"][3]:
+            # 条码实印下缘（不是框底）：二维码的 ^FT 锚点含 4 个模块 quiet zone
+            bb = _printed_bottom(b, template)
+            # 整行都在条码上方 -> 不管；压在条码里或在其下方 -> 都要让出净空
+            if e["dots"][3] <= b["dots"][1] + 0.5:
                 continue
-            need = b["dots"][3] + G.MIN_TEXT_BARCODE_GAP
+            # 二维码多留 1mm（QR 的 quiet zone 只有 4 个模块，被文字蹭掉就锁不住定位图）
+            gap = G.QR_TEXT_GAP if b["kind"] == "barcode2d" else G.MIN_TEXT_BARCODE_GAP
+            need = bb + gap
             if e["dots"][1] < need:
                 shift = max(shift, int(need - e["dots"][1]) + 1)
         if shift <= 0:

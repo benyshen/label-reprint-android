@@ -143,9 +143,9 @@
       "hri": false,
       "dots": [
         33.5918714053667,
-        233.73824689855527,
+        238.73824689855527,
         149.93445008244348,
-        267.3301321058417
+        272.3301321058417
       ],
       "w": 116.34257867707677,
       "h": 33.591885207286424
@@ -157,7 +157,12 @@
       "human-readable line of ABC123"
     ]
   ],
-  "decollided": [],
+  "decollided": [
+    [
+      "ZEBRA",
+      "moved down 5 dots for clearance"
+    ]
+  ],
   "overflow": [],
-  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,75^FT30,100^BCN,75,Y,N,N^FDABC123^FS\r\n^FT30,224^BQN,2,3^FDQA,RA^FS\r\n^FT34,277^A0N,43,43^FB434,1,0,L,0^FDZEBRA^FS\r\n^XZ\r\n"
+  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,75^FT30,100^BCN,75,Y,N,N^FDABC123^FS\r\n^FT30,224^BQN,2,3^FDQA,RA^FS\r\n^FT34,282^A0N,43,43^FB434,1,0,L,0^FDZEBRA^FS\r\n^XZ\r\n"
 }

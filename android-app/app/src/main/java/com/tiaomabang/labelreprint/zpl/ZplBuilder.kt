@@ -62,13 +62,10 @@ object ZplBuilder {
                     bottom = anchor
                 }
                 ElementKind.BARCODE_2D -> {
-                    val modules = ZplGeometry.qrModulesForText(e.text)
-                    val usable = w - ZplGeometry.MARGIN - x
-                    var mag = (e.w / modules).roundToInt().coerceIn(2, 10)
-                    while (mag > 2 && modules * mag > usable) mag -= 1
-                    val blackH = modules * mag
-                    val anchor = top + ZplGeometry.anchorDyQr(blackH, mag)
-                    field = "^FT$x,$anchor^BQN,2,$mag^FDQA,${e.text}^FS"
+                    // mag/实印高/锚点偏移都从 ZplGeometry 取（净空计算也用同一份，避免漂移）
+                    val qr = ZplGeometry.qrLayout(x, e.w, e.text, w)
+                    val anchor = top + qr.anchorDy
+                    field = "^FT$x,$anchor^BQN,2,${qr.mag}^FDQA,${e.text}^FS"
                     bottom = anchor
                 }
                 ElementKind.TEXT -> {

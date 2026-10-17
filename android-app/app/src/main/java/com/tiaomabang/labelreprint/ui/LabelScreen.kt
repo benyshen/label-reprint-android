@@ -113,10 +113,10 @@ fun CameraPane(
                             modifier = Modifier
                                 .background(
                                     if (sel) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.45f),
-                                    RoundedCornerShape(5.dp),
+                                    RoundedCornerShape(20.dp),   // 站点胶囊：20px 圆角
                                 )
                                 .clickable { onTemplate(t.id) }
-                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
                         )
                     }
                 }
@@ -131,6 +131,18 @@ fun CameraPane(
         }
         TextButton(onClick = onRunSelfTest, enabled = !busy) { Text("跑内置样图（自检）") }
     }
+}
+
+/** 结果页里所有 chip 都走这一个：文字统一 labelMedium —— 默认字号下三枚模板 chip 会溢出被裁 */
+@Composable
+private fun LabelChip(selected: Boolean, onClick: () -> Unit, text: String) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(text, style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+        },
+    )
 }
 
 /** 结果页：照片 + 要素框叠加、可编辑要素表、ZPL 预览与导出 */
@@ -173,23 +185,20 @@ fun ResultPane(
 
         PhotoWithBoxes(bitmap, plan.elements, Modifier.fillMaxWidth().height(240.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("模板", style = MaterialTheme.typography.bodySmall)
             ZplGeometry.TEMPLATES.values.forEach { t ->
                 // 标签只放 "模板1 60×40"，且不换行：让 chip 自己换行会把整行撑高、基线错位
-                FilterChip(
+                LabelChip(
                     selected = plan.template == t.id,
                     onClick = { onTemplate(t.id) },
-                    label = {
-                        Text("${t.label} ${t.wMm.toInt()}×${t.hMm.toInt()}",
-                            maxLines = 1, softWrap = false)
-                    },
+                    text = "${t.label} ${t.wMm.toInt()}×${t.hMm.toInt()}",
                 )
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(selected = useOcr, onClick = { onUseOcr(true) }, label = { Text("含文字 OCR") })
-            FilterChip(selected = !useOcr, onClick = { onUseOcr(false) }, label = { Text("仅条码") })
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            LabelChip(selected = useOcr, onClick = { onUseOcr(true) }, text = "含文字 OCR")
+            LabelChip(selected = !useOcr, onClick = { onUseOcr(false) }, text = "仅条码")
             Text("基准=${plan.basis}", style = MaterialTheme.typography.bodySmall)
         }
 
@@ -280,7 +289,9 @@ fun ResultPane(
 @Composable
 private fun PhotoWithBoxes(bitmap: Bitmap, elements: List<LabelElement>, modifier: Modifier) {
     var size by remember { mutableStateOf(IntSize.Zero) }
-    Box(modifier.background(Color(0xFF202020))) {
+    // 颜色要在组合期读出来：Canvas 的 draw lambda 是 DrawScope，不是 @Composable 上下文
+    val accent = MaterialTheme.colorScheme.primary
+    Box(modifier.background(Color.Black)) {
         Image(
             bitmap = bitmap.asImageBitmap(),
             contentDescription = null,
@@ -294,11 +305,18 @@ private fun PhotoWithBoxes(bitmap: Bitmap, elements: List<LabelElement>, modifie
             val ox = (size.width - bitmap.width * s) / 2f
             val oy = (size.height - bitmap.height * s) / 2f
             elements.forEach { e ->
-                drawRect(
-                    color = if (e.kind == ElementKind.TEXT) Color(0xFF4CAF50) else Color(0xFFFF5252),
-                    topLeft = Offset(ox + e.px[0] * s, oy + e.px[1] * s),
+                // 双描边：先画一圈黑底再压彩色线。白纸上的亮绿单线几乎看不见，
+                // 黑底给轮廓、彩线给语义（条码=品牌绿，文字=白）。
+                val box = androidx.compose.ui.geometry.Rect(
+                    offset = Offset(ox + e.px[0] * s, oy + e.px[1] * s),
                     size = Size((e.px[2] - e.px[0]) * s, (e.px[3] - e.px[1]) * s),
-                    style = Stroke(width = 3f),
+                )
+                drawRect(Color.Black, box.topLeft, box.size, style = Stroke(width = 5.5f))
+                drawRect(
+                    color = if (e.kind == ElementKind.TEXT) Color.White else accent,
+                    topLeft = box.topLeft,
+                    size = box.size,
+                    style = Stroke(width = 2.5f),
                 )
             }
         }
@@ -324,7 +342,7 @@ private fun EditDialog(
                     Text("码制", style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         formats.forEach { f ->
-                            FilterChip(selected = format == f, onClick = { format = f }, label = { Text(f) })
+                            LabelChip(selected = format == f, onClick = { format = f }, text = f)
                         }
                     }
                 }

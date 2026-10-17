@@ -87,6 +87,8 @@ def main() -> int:
          G.font_size_for(410, 16.6, "药品标识码：8207188序列号：0078020027464") == 17),
         ("模块宽下限 2 点", G.MIN_MODULE_DOTS == 2.0),
         ("文字/条码净空下限 6 点", G.MIN_TEXT_BARCODE_GAP == 6.0),
+        # QR 净空 = 6 + 1mm(203dpi → 8 点) = 14 点
+        ("二维码下方净空 = 通用 + 1mm = 14 点", G.QR_TEXT_GAP == 14),
     ]
     bad_const = []
     for name, ok in checks:

@@ -10,6 +10,7 @@ import com.tiaomabang.labelreprint.zpl.ZplBuilder
 import com.tiaomabang.labelreprint.zpl.ZplGeometry
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** 一个纯文本识别结果（OCR 行 / 手输行），与条码统一到同一坐标系 */
 data class TextLine(val text: String, val px: List<Float>, val conf: Float = 1f, val source: String = "ocr")
@@ -214,9 +215,20 @@ object LabelPipeline {
                     // 横向得有重叠才谈得上"上下相邻"
                     val hov = min(b.dots[2], e.dots[2]) - maxOf(b.dots[0], e.dots[0])
                     if (hov <= 0.2f * (e.dots[2] - e.dots[0])) continue
-                    // 只处理文字在条码下方的情形（推上方文字会撞到"下边缘锚定"的语义）
-                    if (e.dots[1] < b.dots[3]) continue
-                    val need = b.dots[3] + ZplGeometry.MIN_TEXT_BARCODE_GAP
+                    // 条码**实印下缘**（不是元素框底）：^FT 对条码锚的是最下一行，
+                    // 而二维码的锚点还含 4 个模块 quiet zone —— 框底通常比实印下缘高 20~60 点。
+                    // 按框底加净空会算少了，纸上就是文字压在二维码的 quiet zone 上。
+                    val barBottom = printedBottom(b, labelW)
+                    // 整行都在条码上方 -> 不管（把它推到条码下面会打乱版式）；
+                    // 压在条码里或在其下方 -> 都得让出净空
+                    if (e.dots[3] <= b.dots[1] + 0.5f) continue
+                    // 二维码多留 1mm（QR 的 quiet zone 只有 4 个模块，被文字蹭掉就锁不住定位图）
+                    val gap = if (b.kind == ElementKind.BARCODE_2D) {
+                        ZplGeometry.QR_TEXT_GAP
+                    } else {
+                        ZplGeometry.MIN_TEXT_BARCODE_GAP
+                    }
+                    val need = barBottom + gap
                     if (e.dots[1] < need) shift = maxOf(shift, (need - e.dots[1]).toInt() + 1)
                 }
                 if (shift == 0) {
@@ -237,6 +249,22 @@ object LabelPipeline {
             }
         }
         return out to warns
+    }
+
+    /**
+     * 条码的**实印下缘**（点）。与 ZplBuilder 的锚点算法同源：
+     * 一维码锚点 = 顶 + 条高；二维码锚点 = 顶 + 黑模块高 + 4 个模块 quiet zone。
+     * 元素框底（dots[3]）是照片里量的墨迹范围，二维码因为它自身的 quiet zone 会明显偏小。
+     */
+    private fun printedBottom(b: LabelElement, labelW: Int): Float {
+        val x = ZplGeometry.roundHalf(b.dots[0].toDouble())
+        val top = ZplGeometry.roundHalf(b.dots[1].toDouble())
+        val dy = if (b.kind == ElementKind.BARCODE_2D) {
+            ZplGeometry.qrLayout(x, b.w, b.text, labelW).anchorDy
+        } else {
+            ZplGeometry.anchorDyBarcode1d(b.h.roundToInt())
+        }
+        return (top + dy).toFloat()
     }
 
     // ---- helpers (mirror of the Python versions) ----
