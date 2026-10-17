@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标底色 = App 主题底色（#000000）：启动器把背景层和前景层合成时，
+         和 App 自己的黑底一致，视觉上不会出现"图标一块黑、进去又另一种黑" -->
+    <color name="ic_launcher_background">#000000</color>
+</resources>
