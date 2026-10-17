@@ -1,9 +1,9 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.4（2026-10-17，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
-细节见 `docs/V1.0~V1.4-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+**当前版本：V1.5（2026-10-17，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
+细节见 `docs/V1.0~V1.5-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
 
-**装机包**：`out/label-reprint-V1.4-release.apk`（434 MiB，模型全部内嵌，无需联网）。
+**装机包**：`out/label-reprint-V1.5-release.apk`（434 MiB，模型全部内嵌，无需联网）。
 签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。
 V1.3 之前的包是 debug 签名，**从旧版覆盖安装会失败，需先 `adb uninstall`**；V1.3 → V1.4 可直接 `install -r`。
 
@@ -105,7 +105,8 @@ $PY tools/demo.py --template 1 --frame full
       每 5s 自动刷新（`status()` 与打印共用一把锁，避免读写交错）、设备 chip 高亮选中、刷新/重连按钮
 - [x] V1.3：正式密钥签名的完整安装包（模型 153MB 条码 + 16MB OCR 全部内嵌，`keystore.properties` 定签名）
 - [x] V1.4：应用启动图标（`tools/make_launcher_icon.py` 从 `design/icon_source.png` 生成自适应图标）
-- [ ] V1.4 之后：打后自动拍照比对验收、APK 体积（434 MiB → 裁掉 19MB 自检样图 / 评估 SNPE 库）
+- [x] V1.5：图标构图修正（裁剪按 `alpha≥32` 掩膜、主体 84dp、四边留白对称）
+- [ ] V1.5 之后：打后自动拍照比对验收、APK 体积（434 MiB → 裁掉 19MB 自检样图 / 评估 SNPE 库）
 
 ## 条码引擎：实测短板与混合策略
 

@@ -25,10 +25,20 @@ RES = os.path.join(os.path.dirname(__file__), "..", "android-app", "app", "src",
 # 自适应图标的密度档：108dp 画布
 DENSITIES = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
 CANVAS_DP = 108
-SAFE_DP = 72          # 系统遮罩保证不切的区域（108 的 66.7%）
+
+# 主体尺寸（dp）。官方的 72 安全区是最保守值（"任何遮罩都不切"），实际留黑太多：
+# 用户反馈"画面偏上、黑区大"。而实测这台 TC73 的启动器是**圆角方形**遮罩（圆角约占 20~25%），
+# 84dp 的四个角仍落在遮罩内（圆角 25% 时角点到弧心距离 21 < 半径 27）。
+# 代价：若某个启动器用**正圆**遮罩，相机的左上角 / 袋子的右下角会被啃掉约 3~5dp
+# （那两处本身是圆角，视觉上看不出来）。详见 docs/V1.5-版本记录.md。
+SAFE_DP = 84
 
 # 与 ZebraPalette 一致的黑底：图标背景和 App 主题同一套色
 BG = (0, 0, 0)
+
+# 判"有内容"的 alpha 门槛（0~255）。源图边缘有极淡的残影（alpha 16~31），
+# 拿 getbbox() 会把裁剪框撑到整张画布，主体就被挤到一角 —— 这正是上一版"画面偏上"的原因。
+ALPHA_BBOX_CUT = 32
 
 
 def key_out_black(im: Image.Image) -> Image.Image:
@@ -54,8 +64,13 @@ def key_out_black(im: Image.Image) -> Image.Image:
 
 
 def fit_into(im: Image.Image, box: int) -> Image.Image:
-    """等比缩放到 box×box 内（不放大超过原尺寸太多，保持清晰）。"""
-    bbox = im.getbbox()
+    """按**真正有内容**的范围裁剪后等比缩到 box×box 内。
+
+    裁剪不能用整个通道的 getbbox()：源图四周有 alpha 16~31 的淡残影，会把框撑到整张画布，
+    主体就被挤到上方、四周留一大片黑（上一版的问题）。
+    """
+    mask = im.getchannel("A").point(lambda v: 255 if v >= ALPHA_BBOX_CUT else 0)
+    bbox = mask.getbbox()
     if bbox:
         im = im.crop(bbox)
     w, h = im.size
@@ -92,17 +107,35 @@ def main() -> int:
         solid.save(os.path.join(out_dir, "ic_launcher_monochrome.png"))
 
     if args.preview:
-        # 模拟 launcher：黑底 + 圆形遮罩，看主体有没有被切、条形码还认得出吗
-        prev = Image.new("RGBA", (master, master), BG + (255,))
-        prev.alpha_composite(fg_master)
-        mask = Image.new("L", (master, master), 0)
-        ImageDraw.Draw(mask).ellipse([0, 0, master - 1, master - 1], fill=255)
-        circle = Image.new("RGBA", (master, master), (0, 0, 0, 0))
-        circle.paste(prev, (0, 0), mask)
+        # 模拟三种 launcher 遮罩：圆形 / squircle（主流）/ 圆角方，看主体有没有被切
+        def masked(kind: str, size: int) -> Image.Image:
+            m = Image.new("L", (master, master), 0)
+            d = ImageDraw.Draw(m)
+            if kind == "circle":
+                d.ellipse([0, 0, master - 1, master - 1], fill=255)
+            else:
+                radius = int(master * (0.30 if kind == "squircle" else 0.12))
+                d.rounded_rectangle([0, 0, master - 1, master - 1], radius=radius, fill=255)
+            shot = Image.new("RGBA", (master, master), BG + (255,))
+            shot.alpha_composite(fg_master)
+            out = Image.new("RGBA", (master, master), (0, 0, 0, 0))
+            out.paste(shot, (0, 0), m)
+            return out.resize((size, size), Image.LANCZOS)
+
+        kinds = ("circle", "squircle", "square")
+        cell, pad = 220, 20
+        sheet = Image.new("RGB", (pad + (cell + pad) * 3, pad * 2 + cell), (245, 245, 245))
+        for i, kind in enumerate(kinds):
+            tile = Image.new("RGBA", (cell, cell), (245, 245, 245, 255))
+            tile.alpha_composite(masked(kind, cell), (0, 0))
+            sheet.paste(tile, (pad + i * (cell + pad), pad))
         os.makedirs(os.path.dirname(os.path.abspath(args.preview)), exist_ok=True)
-        circle.resize((256, 256), Image.LANCZOS).save(args.preview)
-        # 同时给一张 48px 的小尺寸，检查"在桌面上只有这么大"时的可读性
-        small = circle.resize((48, 48), Image.LANCZOS)
+        sheet.save(args.preview)
+
+        # 桌面真实大小 48px（三档并排），检查缩小后还认不认得出
+        small = Image.new("RGBA", (48 * 3 + 8 * 4, 48 + 16), (245, 245, 245, 255))
+        for i, kind in enumerate(kinds):
+            small.alpha_composite(masked(kind, 48), (8 + i * 56, 8))
         small_path = args.preview.replace(".png", "_48.png")
         small.save(small_path)
         print(f"preview {args.preview} / {small_path}")
