@@ -14,8 +14,8 @@ android {
         applicationId = "com.tiaomabang.labelreprint"
         minSdk = 34                  // TC73 = Android 14
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.8"
+        versionCode = 10
+        versionName = "1.9"
         ndk { abiFilters += "arm64-v8a" }
     }
 
@@ -113,7 +113,11 @@ dependencies {
     // Zebra 的 Artifactory(zebratech.jfrog.io) 要凭据，本地 AAR 免登录、版本可控。
     // 体积提示：模型资产 147MB(barcode-decoder) + natives 143MB(SDK) —— APK 会到 ~300MB，
     // 只装 TC73 这类 Zebra 机（非 Zebra 机上 AIVisionSDK.getInstance 会抛 UnsupportedOperationException）。
-    implementation(files("libs/AI-Data-Capture-SDK-4.1.0.aar"))
+    // AI Data Capture SDK：**4.0.6，不是 4.1.0**。
+    // 4.1.0 里的 AIVisionSDK 在本机（TC201L / QCS6690 / Android 15）构造时直接抛
+    // `UnsupportedOperationException: AI Vision SDK is not supported`，Zebra 自家 App 也崩；
+    // 换回 4.0.6 就能初始化成功（条码模型仍是 barcode-decoder 5.0.4）。
+    implementation(files("libs/AI-Data-Capture-SDK-4.0.6.aar"))
     implementation(files("libs/barcode-decoder-5.0.4.aar"))
 
     // 打印：Zebra Link-OS Multiplatform SDK 2.14（不在 Maven Central，jar 手工放 libs/）。
