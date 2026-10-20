@@ -167,7 +167,7 @@ fun ResultPane(
 ) {
     var editing by remember { mutableStateOf<Int?>(null) }
     Column(
-        Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(10.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

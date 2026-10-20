@@ -1,9 +1,10 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.6（2026-10-20，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
-细节见 `docs/V1.0~V1.6-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+**当前版本：V1.7（2026-10-20，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
+细节见 `docs/V1.0~V1.7-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
 
-**装机包**：`out/label-reprint-V1.6-release.apk`（434 MiB，模型全部内嵌，无需联网）。
+**装机包**：`out/label-reprint-V1.7-release.apk`（434 MiB，模型全部内嵌，无需联网）。
+⚠️ `V1.6` 那个包一启动就闪退（Activity 字段初始化取 `applicationContext` 为 null），已删除，勿再安装。
 签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。
 V1.3 之前的包是 debug 签名，**从旧版覆盖安装会失败，需先 `adb uninstall`**；V1.3 → V1.4 可直接 `install -r`。
 

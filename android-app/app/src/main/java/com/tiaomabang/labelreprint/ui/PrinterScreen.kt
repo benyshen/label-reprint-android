@@ -61,7 +61,6 @@ fun PrinterScreen(
     autoConnect: Boolean,
     busy: Boolean,
     version: String,
-    onBack: () -> Unit,
     onRefresh: () -> Unit,
     onReconnect: () -> Unit,
     onDisconnect: () -> Unit,
@@ -74,18 +73,15 @@ fun PrinterScreen(
     onCalibrate: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        // ---------- 标题栏 ----------
+        // ---------- 标题行 ----------
+        // 这是底部标签页，不是二级页：没有返回箭头，标题只说明"你在哪一页"
         Row(
             Modifier
                 .fillMaxWidth()
                 .background(ZebraPalette.SurfaceLow)
-                .padding(horizontal = 6.dp, vertical = 4.dp),
+                .padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回",
-                    tint = MaterialTheme.colorScheme.onSurface)
-            }
             Text(
                 "打印机",
                 style = MaterialTheme.typography.titleLarge,
@@ -96,7 +92,6 @@ fun PrinterScreen(
                 "v$version",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(end = 8.dp),
             )
         }
 

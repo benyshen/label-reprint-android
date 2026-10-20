@@ -26,11 +26,20 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.lifecycleScope
 import com.tiaomabang.labelreprint.label.LabelFrame
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import com.tiaomabang.labelreprint.ui.theme.ZebraPalette
 import com.tiaomabang.labelreprint.ui.theme.ZebraTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -142,8 +151,10 @@ class MainActivity : ComponentActivity() {
     private var templatePinned by mutableStateOf(false)
     private var cameraReady by mutableStateOf(false)
 
-    // ---- 打印（Zebra Link-OS：经典蓝牙 / 低功耗蓝牙 / 网口） ----
-    private val printer = ZebraGateway(applicationContext)
+    // 打印（Zebra Link-OS：经典蓝牙 / 低功耗蓝牙 / 网口）
+    // 必须 lazy：Activity 的字段初始化发生在 <init> 阶段，那时 Context 还没 attach，
+    // `applicationContext` 是 null（实测启动即崩：Context.getApplicationContext() on a null object）。
+    private val printer by lazy { ZebraGateway(applicationContext) }
     private val printerPrefs by lazy { PrinterPrefs(this) }
 
     /** 目标打印机："BT:<MAC>" / "BLE:<MAC>" / "TCP:<IP>"。冷启时取上次用的那台（可关）。 */
@@ -159,8 +170,8 @@ class MainActivity : ComponentActivity() {
     private var printing by mutableStateOf(false)
     private var paired by mutableStateOf<List<PairedDevice>>(emptyList())
 
-    // ---- 打印机设置页（独立页面） ----
-    private var printerPage by mutableStateOf(false)
+    // ---- 底部标签页（识别 / 打印机） ----
+    private var tab by mutableStateOf(0)
     private var bleDevices by mutableStateOf<List<BleDevice>>(emptyList())
     private var bleScanning by mutableStateOf(false)
     private var bleNote by mutableStateOf("")
@@ -332,65 +343,98 @@ class MainActivity : ComponentActivity() {
     private fun App() {
         val p = plan
         val bmp = photo
-        // 打印机页是 App 内的二级页：不接管返回键的话，按物理返回会直接退出 App
-        androidx.activity.compose.BackHandler(enabled = printerPage) { printerPage = false }
-        if (printerPage) {
-            // 打印机设置是独立页面：结果页只看"能不能打"，选设备/扫描/校准都在这里
-            PrinterScreen(
-                ui = printerUi,
-                paired = paired,
-                bleDevices = bleDevices,
-                bleScanning = bleScanning,
-                bleNote = bleNote,
-                autoConnect = autoConnect,
-                busy = printing || busy,
-                version = appVersion,
-                onBack = { printerPage = false },
-                onRefresh = ::refreshPrinterStatus,
-                onReconnect = ::reconnectPrinter,
-                onDisconnect = ::disconnectPrinter,
-                onChooseClassic = { d -> choosePrinter("BT:${d.mac}", d.name) },
-                onChooseBle = { d -> choosePrinter("BLE:${d.mac}", d.name) },
-                onScanBle = ::scanBle,
-                onOpenBtSettings = ::openBluetoothSettings,
-                onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
-                onTestPrint = ::printTestPage,
-                onCalibrate = ::calibratePrinter,
-            )
-        } else if (screen == "result" && p != null && bmp != null) {
-            ResultPane(
-                bitmap = bmp, plan = p, status = status, busy = busy, useOcr = useOcr,
-                onEdit = ::applyEdit,
-                onUseOcr = { v -> useOcr = v; reprocess() },
-                onTemplate = { t ->
-                    templatePinned = true          // 手动选过之后不再被自动选覆盖
-                    template = t
-                    plan = LabelPipeline.remap(p, p.elements, t)
-                },
-                onReshoot = ::reshoot,
-                onReanalyze = { reprocess() },   // 同一张照片重跑整链，不碰相机
-                version = appVersion,
-                onCopyZpl = { copy(p.zpl) },
-                onSaveZpl = { saveZpl(p) },
-                onPrint = { printZpl(p.zpl) },
-                printerUi = printerUi,
-                onOpenPrinter = { printerPage = true },
-            )
-        } else {
-            CameraPane(
-                previewView = previewView,
-                status = status,
-                busy = busy,
-                canShoot = cameraReady,
-                template = template,
-                // 拍照页选模板 = 先定标签形状（取景框跟着变），所以也要 pin，别被自动选覆盖
-                onTemplate = { t -> templatePinned = true; template = t },
-                onShoot = ::shoot,
-                onPick = {
-                    pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                onRunSelfTest = { injected = "ALL" },
-            )
+        // 底部标签页：识别 / 打印机。
+        // 为什么是标签页而不是二级页：车间里换打印机随时可能发生（换工位、换机型），
+        // 做成标签页后点一下就切，不用先进结果页、再点「打印机」、再退回来。
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            bottomBar = {
+                NavigationBar(containerColor = ZebraPalette.SurfaceLow) {
+                    NavigationBarItem(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        icon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
+                        label = { Text("识别") },
+                    )
+                    NavigationBarItem(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        // 灯色直接画在 tab 上：在任何页面都能看出打印机连没连上，不用切过去确认
+                        icon = {
+                            Icon(
+                                Icons.Filled.Print,
+                                contentDescription = null,
+                                tint = when (printerUi.phase) {
+                                    LinkPhase.CONNECTED -> ZebraPalette.Lime
+                                    LinkPhase.CONNECTING -> ZebraPalette.BlueBright
+                                    LinkPhase.ERROR -> ZebraPalette.Danger
+                                    LinkPhase.IDLE -> ZebraPalette.Muted
+                                },
+                            )
+                        },
+                        label = { Text("打印机") },
+                    )
+                }
+            },
+        ) { pad ->
+            Box(Modifier.fillMaxSize().padding(pad)) {
+                if (tab == 1) {
+                    PrinterScreen(
+                        ui = printerUi,
+                        paired = paired,
+                        bleDevices = bleDevices,
+                        bleScanning = bleScanning,
+                        bleNote = bleNote,
+                        autoConnect = autoConnect,
+                        busy = printing || busy,
+                        version = appVersion,
+                        onRefresh = ::refreshPrinterStatus,
+                        onReconnect = ::reconnectPrinter,
+                        onDisconnect = ::disconnectPrinter,
+                        onChooseClassic = { d -> choosePrinter("BT:${d.mac}", d.name) },
+                        onChooseBle = { d -> choosePrinter("BLE:${d.mac}", d.name) },
+                        onScanBle = ::scanBle,
+                        onOpenBtSettings = ::openBluetoothSettings,
+                        onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
+                        onTestPrint = ::printTestPage,
+                        onCalibrate = ::calibratePrinter,
+                    )
+                } else if (screen == "result" && p != null && bmp != null) {
+                    ResultPane(
+                        bitmap = bmp, plan = p, status = status, busy = busy, useOcr = useOcr,
+                        onEdit = ::applyEdit,
+                        onUseOcr = { v -> useOcr = v; reprocess() },
+                        onTemplate = { t ->
+                            templatePinned = true          // 手动选过之后不再被自动选覆盖
+                            template = t
+                            plan = LabelPipeline.remap(p, p.elements, t)
+                        },
+                        onReshoot = ::reshoot,
+                        onReanalyze = { reprocess() },   // 同一张照片重跑整链，不碰相机
+                        version = appVersion,
+                        onCopyZpl = { copy(p.zpl) },
+                        onSaveZpl = { saveZpl(p) },
+                        onPrint = { printZpl(p.zpl) },
+                        printerUi = printerUi,
+                        onOpenPrinter = { tab = 1 },
+                    )
+                } else {
+                    CameraPane(
+                        previewView = previewView,
+                        status = status,
+                        busy = busy,
+                        canShoot = cameraReady,
+                        template = template,
+                        // 拍照页选模板 = 先定标签形状（取景框跟着变），所以也要 pin，别被自动选覆盖
+                        onTemplate = { t -> templatePinned = true; template = t },
+                        onShoot = ::shoot,
+                        onPick = {
+                            pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        onRunSelfTest = { injected = "ALL" },
+                    )
+                }
+            }
         }
 
         // 注入指令 -> 状态变 -> 重组 -> 跑流水线（调试钩子走的是同一条主链）
