@@ -332,6 +332,8 @@ class MainActivity : ComponentActivity() {
     private fun App() {
         val p = plan
         val bmp = photo
+        // 打印机页是 App 内的二级页：不接管返回键的话，按物理返回会直接退出 App
+        androidx.activity.compose.BackHandler(enabled = printerPage) { printerPage = false }
         if (printerPage) {
             // 打印机设置是独立页面：结果页只看"能不能打"，选设备/扫描/校准都在这里
             PrinterScreen(
@@ -618,6 +620,7 @@ class MainActivity : ComponentActivity() {
                             printerUi = printerUi.copy(
                                 phase = LinkPhase.CONNECTED, model = r.info,
                                 detail = "已重新连接", at = System.currentTimeMillis(),
+                                transport = printer.transport(),
                             )
                             Log.i(TAG, "PRINT >>> 已连接 ${r.info}")
                         }
