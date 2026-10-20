@@ -9,18 +9,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.tiaomabang.labelreprint.print.PairedDevice
+import com.tiaomabang.labelreprint.print.Transport
 import com.tiaomabang.labelreprint.ui.theme.ZebraPalette
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -38,11 +40,12 @@ enum class LinkPhase { IDLE, CONNECTING, CONNECTED, ERROR }
  */
 data class PrinterUi(
     val phase: LinkPhase = LinkPhase.IDLE,
-    val target: String = "",      // "AC:3F:A4:F2:56:2F" / "192.168.1.20:9100"
-    val name: String = "",        // 配对表里的设备名（ZR668 之类）
+    val target: String = "",      // "AC:3F:A4:F2:56:2F"
+    val name: String = "",        // 配对表 / BLE 广播里的设备名（ZR668 之类）
     val model: String = "",       // 打印机自己报的型号（SGD device.product_name）
     val detail: String = "",      // 就绪 / 缺纸 / 已发送 123 ms / 失败原因
     val at: Long = 0L,            // detail 的时间戳
+    val transport: Transport = Transport.NONE,
 ) {
     val headline: String
         get() = when (phase) {
@@ -55,6 +58,10 @@ data class PrinterUi(
     /** 这条详情是不是我们主动查来的（能显示"xx 前更新"），还是发送/失败的瞬时消息 */
     val detailIsLive: Boolean
         get() = phase == LinkPhase.CONNECTED && at > 0L
+
+    /** 型号优先：蓝牙名常是 "XXZKJ184301333" 这种出厂串，型号 ZR668 才是人想看的 */
+    val title: String
+        get() = listOf(model, name).filter { it.isNotBlank() }.distinct().joinToString(" · ")
 }
 
 private val LinkPhase.color: Color
@@ -65,49 +72,106 @@ private val LinkPhase.color: Color
         LinkPhase.IDLE -> ZebraPalette.Muted
     }
 
+/** 链路类型的小徽标（SPP / BLE）。两种链路的排查手段完全不同，界面上必须能一眼看出。 */
+@Composable
+fun TransportBadge(transport: Transport, modifier: Modifier = Modifier) {
+    if (transport == Transport.NONE) return
+    val c = if (transport == Transport.BLE) ZebraPalette.BlueBright else ZebraPalette.Muted
+    Text(
+        transport.short,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = c,
+        modifier = modifier
+            .background(c.copy(alpha = 0.16f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    )
+}
+
 /**
- * 打印机卡片：状态灯 + 型号/MAC + 实时状态 + 已配对设备选择 + 刷新/重连。
+ * 结果页上的一条窄栏：只说"现在能不能打"，详细设置都进独立页面。
+ *
+ * 为什么不在结果页摆设备列表：结果页的任务是"核对这张标签然后打出去"，
+ * 里面塞一堆设备 chip 会把「重拍 / 打印」挤出屏幕；车间里换打印机的频率远低于看标签。
+ */
+@Composable
+fun PrinterBar(ui: PrinterUi, enabled: Boolean, onOpen: () -> Unit) {
+    val c = ui.phase.color
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(ZebraPalette.CardHigh, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(c, CircleShape))
+        Text(
+            ui.headline,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = c,
+            modifier = Modifier.padding(start = 6.dp),
+        )
+        if (ui.transport != Transport.NONE) {
+            TransportBadge(ui.transport, Modifier.padding(start = 6.dp))
+        }
+        Text(
+            ui.title.ifBlank { if (ui.phase == LinkPhase.IDLE) "没选打印机" else "--" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 8.dp).weight(1f),
+        )
+        // 详情短就显示（"就绪"），长原因留给打印机页；这条栏只有一行的高度
+        if (ui.phase == LinkPhase.CONNECTED && ui.detail.isNotBlank()) {
+            Text(
+                ui.detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(end = 4.dp),
+            )
+        }
+        TextButton(onClick = onOpen, enabled = enabled) { Text("打印机") }
+    }
+}
+
+/**
+ * 打印机页顶部的大卡片：状态灯 + 型号/地址 + 实时状态 + 刷新/断开/重连。
  *
  * 为什么要有"刷新"按钮：状态查询是**主动问打印机**（SGD 往返，蓝牙下一次约 0.3~1s），
  * 不适合每帧都问。自动轮询负责常态，按钮负责"我刚换了纸，立刻看结果"。
  */
 @Composable
-fun PrinterCard(
+fun PrinterStatusCard(
     ui: PrinterUi,
-    paired: List<PairedDevice>,
     busy: Boolean,
-    onChoose: (PairedDevice) -> Unit,
     onRefresh: () -> Unit,
     onReconnect: () -> Unit,
+    onDisconnect: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = ZebraPalette.Card),
+    ) {
         Column(
-            Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // ---- 第一行：状态灯 + 标题 + 型号/MAC ----
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(9.dp).background(ui.phase.color, CircleShape)
-                )
+                Box(Modifier.size(10.dp).background(ui.phase.color, CircleShape))
                 Text(
                     ui.headline,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
                     color = ui.phase.color,
-                    modifier = Modifier.padding(start = 6.dp),
+                    modifier = Modifier.padding(start = 8.dp),
                 )
-                Text(
-                    // 型号优先：蓝牙配对名常是 "XXZKJ184301333" 这种出厂串，型号 ZR668 才是人想看的
-                    listOf(ui.model, ui.name).filter { it.isNotBlank() }.distinct().joinToString(" · ")
-                        // 未选设备时不显示占位的 "--"（"未连接 --" 看着像出错）
-                        .ifBlank { if (ui.phase == LinkPhase.IDLE) "" else "--" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.padding(start = 8.dp).weight(1f),
-                )
-                if (ui.phase == LinkPhase.CONNECTED && ui.detailIsLive) {
+                if (ui.transport != Transport.NONE) {
+                    TransportBadge(ui.transport, Modifier.padding(start = 8.dp))
+                }
+                Box(Modifier.weight(1f))
+                if (ui.detailIsLive) {
                     Text(
                         ago(ui.at),
                         style = MaterialTheme.typography.labelSmall,
@@ -116,74 +180,46 @@ fun PrinterCard(
                 }
             }
 
-            // ---- 第二行：目标地址 + 详情 ----
+            Text(
+                ui.title.ifBlank { "还没有选打印机" },
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
             if (ui.target.isNotBlank()) {
                 Text(
                     ui.target,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (ui.detail.isNotBlank()) {
                 Text(
                     ui.detail,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = if (ui.phase == LinkPhase.ERROR) ZebraPalette.Danger
                     else MaterialTheme.colorScheme.onSurface,
                 )
             }
 
-            // ---- 设备选择（选中的高亮；顺序与 listPairedDevices 一致：按名字） ----
-            if (paired.isEmpty()) {
-                Text(
-                    "没有已配对的蓝牙设备：先去系统设置里配对打印机（Android 不允许 App 自动配对）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    paired.forEach { d ->
-                        AssistChip(
-                            onClick = { onChoose(d) },
-                            // 用 mac 比对，不要用名字（车间里两台同名打印机很常见）
-                            label = {
-                                Text(
-                                    d.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
-                            },
-                            enabled = !busy,
-                            colors = if (d.mac == ui.target) {
-                                androidx.compose.material3.AssistChipDefaults.assistChipColors(
-                                    containerColor = ZebraPalette.Lime,
-                                    labelColor = ZebraPalette.OnLime,
-                                )
-                            } else {
-                                androidx.compose.material3.AssistChipDefaults.assistChipColors()
-                            },
-                        )
-                    }
-                }
-            }
-
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onRefresh,
-                    // 没连上时"刷新状态"没有意义，改成重连更符合直觉
                     enabled = !busy && ui.phase == LinkPhase.CONNECTED,
                 ) { Text("刷新状态") }
                 OutlinedButton(
                     onClick = onReconnect,
                     enabled = !busy && ui.target.isNotBlank(),
                 ) { Text(if (ui.phase == LinkPhase.CONNECTED) "重连" else "连接") }
+                OutlinedButton(
+                    onClick = onDisconnect,
+                    enabled = !busy && ui.phase != LinkPhase.IDLE,
+                ) { Text("断开") }
             }
         }
     }
 }
 
-private fun ago(at: Long): String {
+internal fun ago(at: Long): String {
     if (at <= 0L) return ""
     val sec = ((System.currentTimeMillis() - at) / 1000).coerceAtLeast(0)
     return when {

@@ -48,13 +48,18 @@ import com.tiaomabang.labelreprint.model.ReprintPlan
 import com.tiaomabang.labelreprint.ocr.InferenceBackend
 import com.tiaomabang.labelreprint.ocr.PaddleOcrEngine
 import com.tiaomabang.labelreprint.pipeline.LabelPipeline
+import com.tiaomabang.labelreprint.print.BleDevice
+import com.tiaomabang.labelreprint.print.BleScan
 import com.tiaomabang.labelreprint.print.GatewayResult
 import com.tiaomabang.labelreprint.print.PairedDevice
+import com.tiaomabang.labelreprint.print.PrinterPrefs
+import com.tiaomabang.labelreprint.print.Transport
 import com.tiaomabang.labelreprint.print.ZebraGateway
 import com.tiaomabang.labelreprint.print.listPairedDevices
 import com.tiaomabang.labelreprint.ui.CameraPane
 import com.tiaomabang.labelreprint.ui.ElementEdit
 import com.tiaomabang.labelreprint.ui.LinkPhase
+import com.tiaomabang.labelreprint.ui.PrinterScreen
 import com.tiaomabang.labelreprint.ui.PrinterUi
 import com.tiaomabang.labelreprint.ui.ResultPane
 import com.tiaomabang.labelreprint.zpl.ZplGeometry
@@ -137,12 +142,13 @@ class MainActivity : ComponentActivity() {
     private var templatePinned by mutableStateOf(false)
     private var cameraReady by mutableStateOf(false)
 
-    // ---- 打印（Zebra Link-OS 蓝牙） ----
-    private val printer = ZebraGateway()
+    // ---- 打印（Zebra Link-OS：经典蓝牙 / 低功耗蓝牙 / 网口） ----
+    private val printer = ZebraGateway(applicationContext)
+    private val printerPrefs by lazy { PrinterPrefs(this) }
 
-    /** 目标打印机："BT:<MAC>" 或 "TCP:<IP>"。冷启时若无注入则为 null，由界面选已配对设备。 */
+    /** 目标打印机："BT:<MAC>" / "BLE:<MAC>" / "TCP:<IP>"。冷启时取上次用的那台（可关）。 */
     private var printerSpec by mutableStateOf<String?>(null)
-    private var printerState by mutableStateOf("未连接打印机（先用系统蓝牙配对打印机）")
+    private var printerState by mutableStateOf("未连接打印机（点「打印机」选一台）")
 
     /**
      * 打印机状态（界面唯一真源）。与 [printerState] 并存：后者只用来打日志/兼容注入路径，
@@ -152,6 +158,13 @@ class MainActivity : ComponentActivity() {
     /** 发送中（避免轮询在打印时抢同一条链路） */
     private var printing by mutableStateOf(false)
     private var paired by mutableStateOf<List<PairedDevice>>(emptyList())
+
+    // ---- 打印机设置页（独立页面） ----
+    private var printerPage by mutableStateOf(false)
+    private var bleDevices by mutableStateOf<List<BleDevice>>(emptyList())
+    private var bleScanning by mutableStateOf(false)
+    private var bleNote by mutableStateOf("")
+    private var autoConnect by mutableStateOf(true)
 
     /**
      * `--es print 1` 注入的自动打印标志。用 mutableStateOf 承接而不是直接读 intent：
@@ -175,6 +188,7 @@ class MainActivity : ComponentActivity() {
                 paired = listPairedDevices(this)
                 Log.i(TAG, "PRINT >>> 蓝牙权限已授予，已配对 ${paired.size} 台：" +
                     paired.joinToString { "${it.name}@${it.mac}" })
+                restorePrinterTarget()
             } else {
                 printerState = "缺少蓝牙权限：${missing.joinToString()}"
                 printerUi = printerUi.copy(
@@ -244,7 +258,28 @@ class MainActivity : ComponentActivity() {
             paired = listPairedDevices(this)
             Log.i(TAG, "PRINT >>> 已配对 ${paired.size} 台：" +
                 paired.joinToString { "${it.name}@${it.mac}" })
+            restorePrinterTarget()
         }
+    }
+
+    /**
+     * 启动时恢复上次用的打印机。
+     *
+     * 只在这里读一次 prefs：BLE 打印机不在系统配对表里，不记就是"每次开机都要重扫一遍"。
+     * 注入 `--es bt` 时以注入为准（脚本回归要用指定机器）。
+     */
+    private fun restorePrinterTarget() {
+        autoConnect = printerPrefs.autoConnect
+        val saved = printerPrefs.spec
+        if (saved.isBlank()) return
+        // 先把握手信息填上：即使不自动连接，界面也该显示"上次是 ZR668"
+        printerUi = printerUi.copy(target = addrOf(saved), name = printerPrefs.name)
+        if (!autoConnect || printerSpec != null) {
+            Log.i(TAG, "PRINT >>> 恢复上次目标 $saved（不自动连接：auto=$autoConnect 注入=${printerSpec != null}）")
+            return
+        }
+        printerSpec = saved
+        Log.i(TAG, "PRINT >>> 自动连接上次的打印机 $saved")
     }
 
     /** 缺哪个报哪个：只返回确实没授的权限，已授的重复申请会静默返回 false 把人带偏 */
@@ -283,7 +318,7 @@ class MainActivity : ComponentActivity() {
     private fun normalizeSpec(spec: String): String {
         val s = spec.trim()
         return when {
-            s.startsWith("BT:", true) || s.startsWith("TCP:", true) -> s
+            s.startsWith("BT:", true) || s.startsWith("BLE:", true) || s.startsWith("TCP:", true) -> s
             s.contains(':') && s.length >= 17 -> "BT:$s"      // AA:BB:CC:DD:EE:FF
             else -> "TCP:$s"
         }
@@ -297,7 +332,30 @@ class MainActivity : ComponentActivity() {
     private fun App() {
         val p = plan
         val bmp = photo
-        if (screen == "result" && p != null && bmp != null) {
+        if (printerPage) {
+            // 打印机设置是独立页面：结果页只看"能不能打"，选设备/扫描/校准都在这里
+            PrinterScreen(
+                ui = printerUi,
+                paired = paired,
+                bleDevices = bleDevices,
+                bleScanning = bleScanning,
+                bleNote = bleNote,
+                autoConnect = autoConnect,
+                busy = printing || busy,
+                version = appVersion,
+                onBack = { printerPage = false },
+                onRefresh = ::refreshPrinterStatus,
+                onReconnect = ::reconnectPrinter,
+                onDisconnect = ::disconnectPrinter,
+                onChooseClassic = { d -> choosePrinter("BT:${d.mac}", d.name) },
+                onChooseBle = { d -> choosePrinter("BLE:${d.mac}", d.name) },
+                onScanBle = ::scanBle,
+                onOpenBtSettings = ::openBluetoothSettings,
+                onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
+                onTestPrint = ::printTestPage,
+                onCalibrate = ::calibratePrinter,
+            )
+        } else if (screen == "result" && p != null && bmp != null) {
             ResultPane(
                 bitmap = bmp, plan = p, status = status, busy = busy, useOcr = useOcr,
                 onEdit = ::applyEdit,
@@ -314,13 +372,7 @@ class MainActivity : ComponentActivity() {
                 onSaveZpl = { saveZpl(p) },
                 onPrint = { printZpl(p.zpl) },
                 printerUi = printerUi,
-                paired = paired,
-                onChoosePrinter = { d ->
-                    printerSpec = "BT:${d.mac}"
-                    printerUi = printerUi.copy(phase = LinkPhase.CONNECTING, target = d.mac, name = d.name)
-                },
-                onRefreshPrinter = ::refreshPrinterStatus,
-                onReconnectPrinter = ::reconnectPrinter,
+                onOpenPrinter = { printerPage = true },
             )
         } else {
             CameraPane(
@@ -384,6 +436,21 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- 打印 ----------------
 
+    /**
+     * 用户在某栏里点了设备。`spec` 已带前缀（BT:/BLE:），名字一起记住：
+     * BLE 打印机不在系统配对表里，重启 App 后只能靠存下来的名字显示，不然界面上只有一串 MAC。
+     */
+    private fun choosePrinter(spec: String, name: String) {
+        printerSpec = spec
+        printerUi = printerUi.copy(
+            phase = LinkPhase.CONNECTING,
+            target = addrOf(spec),
+            name = name,
+            detail = "正在连接…",
+        )
+        Log.i(TAG, "PRINT >>> 选择目标 $spec（$name）")
+    }
+
     private fun connectPrinter(spec: String) {
         printerState = "连接中…（$spec）"
         // 名字优先从配对表里补（注入 MAC 时界面只有地址，没有名字会显示成纯 MAC）
@@ -391,7 +458,7 @@ class MainActivity : ComponentActivity() {
         printerUi = printerUi.copy(
             phase = LinkPhase.CONNECTING,
             target = addrOf(spec),
-            name = printerUi.name.ifBlank { known ?: "" },
+            name = printerUi.name.ifBlank { known ?: printerPrefs.name },
             detail = "正在建立连接…",
         )
         lifecycleScope.launch {
@@ -402,8 +469,10 @@ class MainActivity : ComponentActivity() {
                     printerUi = printerUi.copy(
                         phase = LinkPhase.CONNECTED, model = r.info, detail = st,
                         at = System.currentTimeMillis(),
+                        transport = printer.transport(),
                     )
-                    Log.i(TAG, "PRINT >>> 已连接 ${r.info}（$spec）状态=$st")
+                    printerPrefs.remember(spec, printerUi.name)
+                    Log.i(TAG, "PRINT >>> 已连接 ${r.info}（$spec，${printer.transport().label}）状态=$st")
                 }
                 is GatewayResult.Err -> {
                     printerState = "连接失败：${r.reason}"
@@ -411,6 +480,90 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "PRINT >>> 连接失败 $spec：${r.reason}")
                 }
             }
+        }
+    }
+
+    /** 断开：不删记住的目标，下次点「连接」还连它 */
+    private fun disconnectPrinter() {
+        lifecycleScope.launch {
+            printer.disconnect()
+            printerUi = printerUi.copy(
+                phase = LinkPhase.IDLE, model = "", detail = "", at = 0L, transport = Transport.NONE,
+            )
+            printerState = "已断开"
+            Log.i(TAG, "PRINT >>> 已断开")
+        }
+    }
+
+    /**
+     * 扫 BLE 打印机。扫描结果同时来自原生 BLE 扫描与 Zebra SDK 发现（见 [BleScan]），
+     * 每扫到一台就追加到列表；结束后更新提示。
+     */
+    private fun scanBle() {
+        if (bleScanning) return
+        bleDevices = emptyList()
+        bleNote = ""
+        bleScanning = true
+        val started = BleScan.scan(
+            ctx = this,
+            seconds = 8_000,
+            onFound = { d ->
+                bleDevices = bleDevices.filterNot { it.mac.equals(d.mac, true) } + d
+                // Zebra 认出来的排前面：那是"基本肯定能打"的
+                bleDevices = bleDevices.sortedWith(
+                    compareByDescending<BleDevice> { it.zebra }.thenByDescending { it.rssi ?: -999 }
+                )
+            },
+            onNote = { bleNote = it; Log.w(TAG, "PRINT >>> BLE 扫描：$it") },
+            onDone = {
+                bleScanning = false
+                if (bleDevices.isEmpty()) {
+                    bleNote = "没扫到 BLE 打印机：确认打印机开机、蓝牙已开、离近一点（BLE 距离比经典蓝牙敏感）"
+                } else {
+                    bleNote = "扫到 ${bleDevices.size} 台（标「Zebra」的是 SDK 确认过的打印机）"
+                }
+                Log.i(TAG, "PRINT >>> BLE 扫描结束，${bleDevices.size} 台")
+            },
+        )
+        if (!started) bleScanning = false
+    }
+
+    private fun openBluetoothSettings() {
+        val intents = listOf(
+            Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS),
+            Intent(android.provider.Settings.ACTION_SETTINGS),
+        )
+        for (i in intents) {
+            val ok = runCatching { startActivity(i) }.isSuccess
+            if (ok) return
+        }
+        status = "打不开系统蓝牙设置，请手动到「设置 → 蓝牙」配对打印机"
+    }
+
+    /** 测试页：一张最小标签，验证"链通 + 能出纸"。换机器、换纸、换现场都先打这张。 */
+    private fun printTestPage() {
+        val zpl = buildString {
+            append("^XA")
+            append("^PW480^LL320")
+            append("^FO20,20^A0N,34,34^FD测试页 TEST PAGE^FS")
+            append("^FO20,70^A0N,22,22^FD${appVersion} / ${printer.transport().short.ifBlank { "无链路" }}^FS")
+            append("^FO20,110^A0N,22,22^FD${printerUi.target}^FS")
+            append("^FO20,150^BY2^BCN,90,Y,N,N^FD${printerUi.target.replace(":", "")}^FS")
+            append("^XZ")
+        }
+        Log.i(TAG, "PRINT >>> 打印测试页（${printer.transport().label}）")
+        printZpl(zpl)
+    }
+
+    /** 换纸后校准（`~jc`）：标签间隙重新测一遍，否则每张都会偏 */
+    private fun calibratePrinter() {
+        lifecycleScope.launch {
+            val r = printer.calibrate()
+            printerUi = printerUi.copy(
+                detail = if (r is GatewayResult.Ok) "已发送校准指令" else (r as GatewayResult.Err).reason,
+                at = System.currentTimeMillis(),
+            )
+            Log.i(TAG, "PRINT >>> 校准：$r")
         }
     }
 
@@ -425,6 +578,7 @@ class MainActivity : ComponentActivity() {
                 phase = if (alive) LinkPhase.CONNECTED else LinkPhase.ERROR,
                 detail = st,
                 at = System.currentTimeMillis(),
+                transport = printer.transport(),
             )
             Log.i(TAG, "PRINT >>> 状态刷新：$st（alive=$alive）")
         }
@@ -439,9 +593,10 @@ class MainActivity : ComponentActivity() {
         connectPrinter(spec)
     }
 
-    /** "BT:AA:BB:.." -> "AA:BB:.."；"TCP:1.2.3.4:9100" 原样显示 */
+    /** "BT:AA:BB:.." / "BLE:AA:BB:.." -> "AA:BB:.."；"TCP:1.2.3.4:9100" 原样显示 */
     private fun addrOf(spec: String): String =
-        spec.removePrefix("BT:").removePrefix("bt:").removePrefix("TCP:").removePrefix("tcp:")
+        spec.removePrefix("BT:").removePrefix("bt:").removePrefix("BLE:").removePrefix("ble:")
+            .removePrefix("TCP:").removePrefix("tcp:")
 
     private fun printZpl(zpl: String) {
         val spec = printerSpec

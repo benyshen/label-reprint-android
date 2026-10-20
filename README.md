@@ -1,9 +1,9 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.5（2026-10-17，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
-细节见 `docs/V1.0~V1.5-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+**当前版本：V1.6（2026-10-20，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
+细节见 `docs/V1.0~V1.6-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
 
-**装机包**：`out/label-reprint-V1.5-release.apk`（434 MiB，模型全部内嵌，无需联网）。
+**装机包**：`out/label-reprint-V1.6-release.apk`（434 MiB，模型全部内嵌，无需联网）。
 签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。
 V1.3 之前的包是 debug 签名，**从旧版覆盖安装会失败，需先 `adb uninstall`**；V1.3 → V1.4 可直接 `install -r`。
 
@@ -71,6 +71,12 @@ android-app/       (第 2 步) Kotlin + Compose
     （`y = 框顶 + 黑模块高 + 4×mag`），实测比照片里量的墨迹底低 **28 点（3.5mm）**。净空/避让必须按
     `printedBottom()` 算，按框底算永远差一截 → 文字压进 QR 的 quiet zone，扫不出来。
     另：净空判据必须是"整行都在条码上方才跳过"，否则"文字已经压在条码里"这个最该修的 case 会被静默跳过。
+12. **BLE 打印需要新 ZSDK jar**：2018 版 `ZSDK_ANDROID_API.jar` 里只有 `com.zebra.sdk.comm.*`（经典 SPP），
+    没有 `com.zebra.sdk.btleComm.*`，所以"加 BLE 支持"第一步是换 jar（旧包留 `.bak`）。
+    另：`BluetoothLeDiscoverer` 按 Zebra 的服务 UUID 过滤，**固件没广播那串 UUID 的机器永远扫不到** ——
+    必须再开一路原生 `BluetoothLeScanner` 才能回答"打印机在不在广播"。
+13. **BLE 打印机不在系统配对表里**：`BT:` 与 `BLE:` 是两条链路，`BLE:` 不需要系统配对、直接建 GATT；
+    也不能用"经典连不上就回退 BLE"来兜底（会掩盖真错误）。目标串（含前缀）必须落盘，否则每次开机都要重扫。
 
 ## 用法
 
@@ -106,7 +112,8 @@ $PY tools/demo.py --template 1 --frame full
 - [x] V1.3：正式密钥签名的完整安装包（模型 153MB 条码 + 16MB OCR 全部内嵌，`keystore.properties` 定签名）
 - [x] V1.4：应用启动图标（`tools/make_launcher_icon.py` 从 `design/icon_source.png` 生成自适应图标）
 - [x] V1.5：图标构图修正（裁剪按 `alpha≥32` 掩膜、主体 84dp、四边留白对称）
-- [ ] V1.5 之后：打后自动拍照比对验收、APK 体积（434 MiB → 裁掉 19MB 自检样图 / 评估 SNPE 库）
+- [x] V1.6：打印机连接独立成页 + 低功耗蓝牙（BLE）；ZSDK jar 换含 `btleComm` 的新版
+- [ ] V1.6 之后：打后自动拍照比对验收、APK 体积（434 MiB → 裁掉 19MB 自检样图 / 评估 SNPE 库）
 
 ## 条码引擎：实测短板与混合策略
 

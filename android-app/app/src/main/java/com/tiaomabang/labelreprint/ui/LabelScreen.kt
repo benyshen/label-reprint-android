@@ -163,10 +163,7 @@ fun ResultPane(
     onSaveZpl: () -> Unit,
     onPrint: () -> Unit,
     printerUi: PrinterUi,
-    paired: List<PairedDevice>,
-    onChoosePrinter: (PairedDevice) -> Unit,
-    onRefreshPrinter: () -> Unit,
-    onReconnectPrinter: () -> Unit,
+    onOpenPrinter: () -> Unit,
 ) {
     var editing by remember { mutableStateOf<Int?>(null) }
     Column(
@@ -246,17 +243,13 @@ fun ResultPane(
             OutlinedButton(onClick = onSaveZpl, enabled = !busy) { Text("导出 .zpl") }
         }
 
-        // ---- 打印（Zebra Link-OS 蓝牙 / 网口） ----
+        // ---- 打印（Zebra Link-OS：经典蓝牙 / 低功耗蓝牙 / 网口） ----
         HorizontalDivider()
-        Text("打印", style = MaterialTheme.typography.titleSmall)
-        PrinterCard(
-            ui = printerUi,
-            paired = paired,
-            busy = busy,
-            onChoose = onChoosePrinter,
-            onRefresh = onRefreshPrinter,
-            onReconnect = onReconnectPrinter,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("打印", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        }
+        // 这一栏只说"能不能打"，选设备/扫描/校准都在独立页（PrinterScreen）
+        PrinterBar(ui = printerUi, enabled = !busy, onOpen = onOpenPrinter)
         Button(onClick = onPrint, enabled = !busy) { Text("打印这张标签") }
         Card(Modifier.fillMaxWidth()) {
             SelectionContainer {

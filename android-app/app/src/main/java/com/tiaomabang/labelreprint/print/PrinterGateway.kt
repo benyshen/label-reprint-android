@@ -9,11 +9,11 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.zebra.sdk.btleComm.BluetoothLeConnection
 import com.zebra.sdk.comm.BluetoothConnection
 import com.zebra.sdk.comm.BluetoothConnectionInsecure
 import com.zebra.sdk.comm.Connection
 import com.zebra.sdk.comm.ConnectionException
-import com.zebra.sdk.comm.TcpConnection
 import com.zebra.sdk.printer.PrinterLanguage
 import com.zebra.sdk.printer.PrinterStatus
 import com.zebra.sdk.printer.SGD
@@ -24,15 +24,22 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+/** 链路类型。界面上必须能看出"这条是经典蓝牙还是低功耗蓝牙"，两者排查手段完全不同。 */
+enum class Transport(val label: String, val short: String) {
+    NONE("未连接", ""),
+    SPP("经典蓝牙（SPP）", "SPP"),
+    BLE("低功耗蓝牙（BLE）", "BLE"),
+}
+
 /**
  * 打印通道抽象。真机用 [ZebraGateway]；没有打印机时用 [DryRunGateway] 只生成 ZPL，
  * 这样界面与版面逻辑可以在没有硬件的情况下先验证完。
  *
- * 移植自 E:/workspace/voice-print-android（同一套 Link-OS 2.14 + ZSDK_ANDROID_API.jar），
+ * 移植自 E:/workspace/voice-print-android（同一套 Link-OS ZSDK_ANDROID_API.jar），
  * 那边踩过的坑在这里全部保留，别删注释里的原因说明。
  */
 interface PrinterGateway {
-    /** "BT:AA:BB:.." 或 "TCP:192.168.1.50" */
+    /** "BT:AA:BB:.." 经典蓝牙 | "BLE:AA:BB:.." 低功耗蓝牙 | "TCP:1.2.3.4[:9100]" 网口 */
     suspend fun connect(spec: String): GatewayResult
     suspend fun status(): String
     suspend fun printZpl(zpl: String): GatewayResult
@@ -40,6 +47,8 @@ interface PrinterGateway {
     suspend fun getSgd(name: String): GatewayResult
     suspend fun disconnect()
     fun isConnected(): Boolean
+    /** 当前走的是哪条链路（连上之前是 NONE） */
+    fun transport(): Transport
 }
 
 sealed class GatewayResult {
@@ -75,7 +84,7 @@ fun listPairedDevices(ctx: Context): List<PairedDevice> {
 }
 
 /**
- * Zebra Link-OS 2.14（ZSDK_ANDROID_API.jar 手工放 app/libs/，并必须显式加 Jackson 三件套）。
+ * Zebra Link-OS（ZSDK_ANDROID_API.jar 手工放 app/libs/，并必须显式加 Jackson 三件套）。
  *
  * 硬约束（官方样例里写死的，别省）：
  * 1) **调用线程必须有 Looper**（官方样例 `Looper.prepare()`）。Zebra SDK 内部用 Handler 做
@@ -83,12 +92,18 @@ fun listPairedDevices(ctx: Context): List<PairedDevice> {
  *    这里用专用 HandlerThread + asCoroutineDispatcher，所有 SDK 调用都落在这个线程上。
  * 2) 同一 MAC 串行：一个 Connection 同时只能有一个在途写 -> Mutex。
  * 3) 写完 `^XZ` 不能立刻 close，至少等 300~500ms，否则尾包丢、标签只打一半。
- * 4) Android 不允许程序自动配对，打印机必须先在系统设置里配对好。
+ * 4) 经典蓝牙：Android 不允许程序自动配对，打印机必须先在系统设置里配对好。
+ *    低功耗蓝牙（BLE）：**不需要系统配对**，直接拿 MAC 建 GATT，所以新机（ZD421 这类只开 BLE 的）能连上。
  * 5) 连接后先强制 ZPL 语言，并用 getInstance(PrinterLanguage.ZPL, conn) 免掉语言探测往返。
  * 6) **不要用 ConnectionBuilder.build()**：2.14 的 Android 版即使字符串合法也会抛
  *    ConnectionException("Invalid connection type")，必须直接构造连接对象。
+ * 7) BLE 需要 `com.zebra.sdk.btleComm.*`（ZSDK 2.15+ 才有）。旧的 2.14 jar 里没有这个包，
+ *    换成新 jar 才编得过；`app/libs/ZSDK_ANDROID_API-2.14-noBLE.jar.bak` 是旧包的备份。
  */
-class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : PrinterGateway {
+class ZebraGateway(
+    private val appContext: Context,
+    private val log: (String) -> Unit = { Log.i(TAG, it) },
+) : PrinterGateway {
 
     companion object {
         private const val TAG = "ZebraGateway"
@@ -114,6 +129,12 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
     @Volatile
     private var printer: ZebraPrinterLinkOs? = null
 
+    /** 当前链路类型（连上之后才有效）。BLE 的 MTU / 分包行为和 SPP 完全不同，界面与日志都要能区分。 */
+    @Volatile
+    private var link: Transport = Transport.NONE
+
+    override fun transport(): Transport = link
+
     override fun isConnected(): Boolean = runCatching { conn?.isConnected == true }.getOrDefault(false)
 
     override suspend fun connect(spec: String): GatewayResult = withContext(sdk) {
@@ -121,17 +142,31 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
             try {
                 closeInternal()
                 val normalized = spec.trim()
-                val attempts: List<Pair<String, () -> Connection>> = if (normalized.startsWith("BT:")) {
-                    val mac = normalized.removePrefix("BT:").trim()
-                    listOf(
-                        "BluetoothConnection" to { BluetoothConnection(mac) as Connection },
-                        "BluetoothConnectionInsecure" to { BluetoothConnectionInsecure(mac) as Connection }
-                    )
-                } else {
-                    val body = normalized.removePrefix("TCP:").removePrefix("tcp:")
-                    val host = body.substringBefore(':').trim()
-                    val port = body.substringAfter(':', "9100").trim().toIntOrNull() ?: 9100
-                    listOf("TcpConnection:$host:$port" to { TcpConnection(host, port) as Connection })
+                // 前缀只在这里判定一次，界面/调用方不再猜，避免 "BT:" 与 "BLE:" 互相回退掩盖真错误
+                val attempts: List<Pair<String, () -> Connection>> = when {
+                    // 低功耗蓝牙：不需要系统配对，直接建 GATT（ZD421 这类只开 BLE 的新机就走这条）
+                    normalized.startsWith("BLE:", true) -> {
+                        val mac = normalized.substringAfter(':').trim()
+                        listOf("BluetoothLeConnection" to {
+                            BluetoothLeConnection(mac, appContext) as Connection
+                        })
+                    }
+                    normalized.startsWith("BT:", true) -> {
+                        val mac = normalized.substringAfter(':').trim()
+                        listOf(
+                            "BluetoothConnection" to { BluetoothConnection(mac) as Connection },
+                            "BluetoothConnectionInsecure" to { BluetoothConnectionInsecure(mac) as Connection }
+                        )
+                    }
+                    else -> {
+                        val body = normalized.removePrefix("TCP:").removePrefix("tcp:")
+                        val host = body.substringBefore(':').trim()
+                        if (host.isBlank()) throw IllegalArgumentException("不支持的目标：$normalized")
+                        val port = body.substringAfter(':', "9100").trim().toIntOrNull() ?: 9100
+                        listOf("TcpConnection:$host:$port" to {
+                            com.zebra.sdk.comm.TcpConnection(host, port) as Connection
+                        })
+                    }
                 }
                 var lastErr: Throwable? = null
                 var opened: Connection? = null
@@ -158,7 +193,19 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
                     }
                 }
                 val c: Connection = opened ?: throw (lastErr ?: IllegalStateException("无可用的连接方式"))
-                log("已建立连接：$usedName")
+                link = when {
+                    usedName == "BluetoothLeConnection" -> Transport.BLE
+                    usedName.startsWith("BluetoothConnection") -> Transport.SPP
+                    else -> Transport.NONE
+                }
+                if (link == Transport.BLE) {
+                    // MTU 决定每包能塞多少字节：SDK 会自己按 MTU 分包，但日志里记下来，
+                    // 一旦出现"只打了一半"就能先看 MTU 是不是被协商成了默认 23。
+                    val mtu = runCatching { (c as BluetoothLeConnection).getCurrentMTU() }.getOrNull()
+                    log("已建立连接：$usedName（BLE，MTU=$mtu）")
+                } else {
+                    log("已建立连接：$usedName")
+                }
                 c.write(SET_ZPL.toByteArray(Charsets.UTF_8))
                 val p: ZebraPrinterLinkOs? = runCatching { ZebraPrinterFactory.getLinkOsPrinter(c) }
                     .getOrElse {
@@ -264,6 +311,7 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
         runCatching { conn?.close() }
         conn = null
         printer = null
+        link = Transport.NONE
     }
 
     private fun statusTextOf(st: PrinterStatus): String = when {
@@ -279,7 +327,14 @@ class ZebraGateway(private val log: (String) -> Unit = { Log.i(TAG, it) }) : Pri
         return when {
             m.contains("read failed", true) || m.contains("socket might closed", true) ->
                 "蓝牙链路建不起来（SPP 套接字失败）。常见原因：这个配对是 BLE-only，" +
-                    "打印机蓝牙模式需改为 both/classic 后重新配对；或打印机不在范围内。"
+                    "打印机蓝牙模式需改为 both/classic 后重新配对；或打印机不在范围内。" +
+                    "也可能它是 BLE 机型 —— 换「低功耗蓝牙」那一栏连接试试。"
+            // BLE 的失败原因和 SPP 完全不同：GATT 133 是最常见的一个，几乎都跟"没连上/被抢走"有关
+            m.contains("133", true) || m.contains("GATT", true) ->
+                "低功耗蓝牙连接被中断（GATT 133）：先关掉手机的蓝牙再打开，或把打印机重启一次；" +
+                    "注意同一条 BLE 打印机同一时间只能被一台手机连接"
+            m.contains("mtu", true) || m.contains("negotiate", true) ->
+                "低功耗蓝牙协商 MTU 失败：离打印机近一点再试（BLE 距离比 SPP 敏感）"
             t is ConnectionException && m.contains("timed out", true) ->
                 "打印机无响应（超时）：确认已开机、在蓝牙/网络可达范围内"
             m.contains("Service discovery", true) || m.contains("uuid", true) ->
@@ -307,4 +362,5 @@ class DryRunGateway : PrinterGateway {
     override suspend fun getSgd(name: String) = GatewayResult.Ok("干跑模式")
     override suspend fun disconnect() {}
     override fun isConnected() = true
+    override fun transport() = Transport.NONE
 }
