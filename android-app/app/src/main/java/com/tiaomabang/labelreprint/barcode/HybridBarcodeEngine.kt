@@ -35,6 +35,9 @@ class HybridBarcodeEngine(private val ctx: Context) : BarcodeEngine {
     var zebraAvailable = false
         private set
 
+    /** DL 不可用的原因（界面上要给出"为什么只剩 zxing"） */
+    val zebraError: String? get() = zebra.lastError
+
     var lastMs: Long = 0
         private set
 
@@ -69,6 +72,7 @@ class HybridBarcodeEngine(private val ctx: Context) : BarcodeEngine {
 
         lastMs = System.currentTimeMillis() - t0
         notes += "zebra(${if (zebraAvailable) "on" else "off"})=${zb.size} zxing=${zx.size} 合并=${out.size}"
+        if (!zebraAvailable) notes += "DL 不可用：${zebra.lastError ?: "初始化失败"}"
         Log.i(TAG, "HYBRID >>> ${notes.joinToString("；")}　${lastMs}ms")
         return out
     }

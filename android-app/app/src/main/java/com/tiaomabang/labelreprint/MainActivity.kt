@@ -876,8 +876,13 @@ class MainActivity : ComponentActivity() {
                 val (p, msg) = r.getOrNull() ?: (null to "识别失败：${r.exceptionOrNull()?.message}")
                 status = msg
                 if (p != null) {
-                    plan = p
-                    template = p.template       // 同步自动选出的模板，界面 chip 与后续重排都以它为准
+                    // DL 引擎起不来时（TC201 这类机型厂商 SDK 直接拒绝），结果页要说明白
+                    // "为什么只剩 zxing"，否则用户只会看到一维码漏识别、以为功能坏了
+                    val withNote = if (engineKind == "hybrid" && !hybrid.zebraAvailable) {
+                        p.copy(warnings = p.warnings + "条码库：${hybrid.zebraError ?: "Zebra DL 不可用"}，仅 zxing 识别")
+                    } else p
+                    plan = withNote
+                    template = withNote.template     // 同步自动选出的模板，界面 chip 与后续重排都以它为准
                     photo = lastWorking ?: bmp  // 显示校正后的标签图：要素框就是在它上面量的
                     screen = "result"
                     // 结果页不再需要取景器：解绑相机，省电也免得预览占着相机内存
