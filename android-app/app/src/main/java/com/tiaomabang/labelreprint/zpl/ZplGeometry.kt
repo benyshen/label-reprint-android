@@ -16,10 +16,30 @@ object ZplGeometry {
 
     val TEMPLATES: Map<Int, Template> = linkedMapOf(
         1 to Template(1, "模板1", 60.0, 40.0, 203),
-        2 to Template(2, "模板2", 70.0, 70.0, 203),
-        3 to Template(3, "模板3", 70.0, 100.0, 203),
+        2 to Template(2, "模板2", 76.0, 70.0, 203),   // 整张纸 76x70mm（实测），可打印区更窄、四周留白
+        // 模板3 是「自定义」：尺寸由用户设（默认 76x70mm，和现场标签一致）
+        3 to Template(3, "自定义", 76.0, 70.0, 203),
     )
     const val DEFAULT_TEMPLATE = 1
+
+    /** 自定义模板号 */
+    const val CUSTOM_TEMPLATE = 3
+
+    /**
+     * 设置「自定义」模板的标签纸尺寸（mm）。
+     *
+     * 直接改 TEMPLATES[3] 而不是加一条分支：aspectOf / 模板 chip 文案 / 布局 / ZPL 画布
+     * 全都读 TEMPLATES，改这一处就全线跟随，不会漏。
+     */
+    fun setCustomSize(wMm: Double, hMm: Double) {
+        if (!(wMm > 10.0 && wMm < 300.0 && hMm > 10.0 && hMm < 300.0)) return
+        (TEMPLATES as MutableMap)[CUSTOM_TEMPLATE] = Template(CUSTOM_TEMPLATE, "自定义", wMm, hMm, 203)
+    }
+
+    fun customSize(): Pair<Double, Double> {
+        val t = TEMPLATES.getValue(CUSTOM_TEMPLATE)
+        return t.wMm to t.hMm
+    }
 
     /**
      * 按源图长宽比自动选模板。
@@ -148,10 +168,21 @@ object ZplGeometry {
         val cap = if (isCjk(text)) CAP_RATIO_CJK else FONT_CAP_RATIO
         val fsH = boxH / cap
         val fsW = boxW / maxOf(1e-6, textWidth(text, 1))
-        return maxOf(8, Math.round(minOf(fsH, fsW)).toInt())
+        // 实测整版字号统一小一号（约 12~15%）：OCR 行框往往比字形窄一点点，
+        // 双约束取 min 之后又偏保守，纸上就整体小一号。统一放大 1.15 补偿。
+        return maxOf(8, Math.round(minOf(fsH, fsW) * FONT_GAIN).toInt())
     }
 
-    fun anchorDyText(fontSize: Int, lines: Int = 1): Int = lines * fontSize
+    /**
+     * 文字基线偏移。
+     *
+     * 原式 lines × 字号 会让整版文字偏高约 1.5mm（用户实测：文字压在上一条分隔线上方）。
+     * 加 12 点 = 1.5mm @203dpi（8 点/mm）把整版文字压回设计位置；只影响文字，不动框线/条码。
+     */
+    fun anchorDyText(fontSize: Int, lines: Int = 1): Int = lines * fontSize + TEXT_BASELINE_FIX
+
+    /** 1.5mm @203dpi */
+    private const val TEXT_BASELINE_FIX = 12
 
     fun anchorDyBarcode1d(barHeight: Int): Int = barHeight
 
@@ -190,6 +221,91 @@ object ZplGeometry {
     }
 
     fun code39Modules(nChars: Int): Int = 16 * (nChars + 2) + 1
+
+    // ------------------------------------------------------------------
+    // 码制：ZXing/Zebra 报的码制名 -> 内部键 -> ZPL 命令 + 模块数
+    //
+    // V1.9 的老逻辑只有一句 `format.contains("128") ? code128 : code39`，
+    // 于是 EAN-13 的标签被打成 ^BC（Code128）—— 纸面上条码看着像，扫描器却能看出
+    // 起止符和校验位全不对，HRI 也被重排（用户实测：6 934024 512123 -> 934024"512123）。
+    // 这里与 PC 端 tools/zpl_geometry.py 的 SYMBOLOGY/BARCODE_CMD 必须逐项一致。
+    // ------------------------------------------------------------------
+    private val SYMBOLOGY = mapOf(
+        "EAN-13" to "ean13", "EAN13" to "ean13",
+        "EAN-8" to "ean8", "EAN8" to "ean8",
+        "UPC-A" to "upca", "UPCA" to "upca",
+        "UPC-E" to "upce", "UPCE" to "upce",
+        "ITF" to "i2of5", "I2OF5" to "i2of5", "ITF-14" to "i2of5", "ITF14" to "i2of5",
+        "Code 128" to "code128", "CODE128" to "code128", "Code128" to "code128",
+        "Code 39" to "code39", "CODE39" to "code39", "Code39" to "code39",
+        "Code 93" to "code93", "CODE93" to "code93",
+        "Codabar" to "codabar", "CODABAR" to "codabar",
+    )
+
+    /** 固定模块数的零售码（zpl-core photo.py:_FIXED_MODULES）。按通用公式估会算小 15%，
+     *  模块宽跟着放大，打出来比原码宽一截 —— 用户报的"条码比原标签胖"。 */
+    private val FIXED_MODULES = mapOf("ean13" to 95, "upca" to 95, "ean8" to 67, "upce" to 51)
+
+    /** 码制键 -> ZPL 命令（zpl-core builder.py:BARCODE_SPECS） */
+    fun symbology(format: String?): String =
+        SYMBOLOGY[format?.trim() ?: ""] ?: "code128"
+
+    fun isFixedSymbology(sym: String): Boolean = FIXED_MODULES.containsKey(sym)
+
+    /** 该码制的模块总数（用于从照片宽度反推模块宽） */
+    fun barcodeModules(sym: String, text: String): Int {
+        val n = maxOf(1, text.length)
+        FIXED_MODULES[sym]?.let { return it }
+        val digits = text.all { it.isDigit() }
+        return when (sym) {
+            "code39" -> code39Modules(n)
+            "code93" -> 9 * n + 28
+            // Interleaved 2 of 5：每对数字 16 模块（宽窄比 2.5）+ 起始 4 + 终止 4.5
+            "i2of5" -> 8 * n + 9
+            "codabar" -> 11 * n + 21
+            else -> code128Modules(n, digits)
+        }
+    }
+
+    /**
+     * 一维码字段：^BY + ^FT + 码制命令。
+     *
+     * 参数按各命令自己的字母序写全（^B3/^B0 是 o,e,h,f,g；^B9/^B2/^BA 是 o,h,f,g[,e,j]）——
+     * 少写一个逗号后面的值会被当成下一个参数，打出来是错的码制或者直接报 ^XA 错误。
+     * PC 端 tools/zpl_geometry.py:barcode_1d_field 是同一份实现。
+     */
+    fun barcode1dField(
+        sym: String,
+        x: Int,
+        anchor: Int,
+        moduleWidth: Double,
+        barHeight: Int,
+        hri: Boolean,
+    ): String {
+        val mw = fmtNum(moduleWidth)
+        val f = if (hri) "Y" else "N"
+        val head = "^BY$mw,2.5,$barHeight^FT$x,$anchor"
+        val cmd = when (sym) {
+            "ean13" -> "^BEN,$barHeight,$f,N"
+            "ean8" -> "^B8N,$barHeight,$f,N"
+            "upca" -> "^B9N,$barHeight,$f,N,N"
+            "upce" -> "^B0N,N,$barHeight,$f,N"
+            "i2of5" -> "^B2N,$barHeight,$f,N,N,N"
+            "code39" -> "^B3N,N,$barHeight,$f,N"
+            "code93" -> "^BAN,$barHeight,$f,N,N"
+            "codabar" -> "^BKN,N,$barHeight,$f,N,A,A"
+            else -> "^BCN,$barHeight,$f,N,N"
+        }
+        return head + cmd
+    }
+
+    internal fun fmtNum(v: Double): String =
+        if (v == Math.floor(v)) v.toInt().toString() else v.toString()
+
+    /** 印出来的墨迹宽 / 推进宽（zpl-core 实测）。照片量到的是墨迹宽，反推字号要除回来。 */
+    const val WIDTH_SLACK = 0.92
+    /** 字号整体补偿系数：实测整版偏小一号（12~15%），取 1.15 */
+    const val FONT_GAIN = 1.15
 
     /** QR 版本容量（纠错级 Q，^BQ 默认）：模块数 / 字母数字容量 / 字节容量 */
     private val QR_CAPACITY_Q = listOf(

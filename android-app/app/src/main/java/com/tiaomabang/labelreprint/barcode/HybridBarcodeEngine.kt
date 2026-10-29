@@ -64,11 +64,12 @@ class HybridBarcodeEngine(private val ctx: Context) : BarcodeEngine {
         }
 
         val out = ArrayList<DetectedBarcode>()
-        // zxing 先入：两个引擎都解出同一个符号时，留 zxing 的框 —— PC 端参考实现用的就是 zxing，
-        // 只有端侧与它逐字节可比，tools/device_zpl_check.py 这条回归网才有意义。DL 的价值在于
-        // 「zxing 没解出来的符号」（糊照片上的二维码、低分辨率下的一维码），那些框由它补上。
-        for (b in zx) merge(out, b)
+        // **Zebra AI Data Capture（barcode-decoder 5.0.4）先入**：用户明确要求条码识别优先走它。
+        // 它给真四角/包围盒，码制判定（EAN-13 / Code128 / ITF）也更可靠 —— 下游 ZplBuilder
+        // 正是拿 format 决定发 ^BE 还是 ^BC，码制判错整条码就白打。
+        // zxing 的价值在于"DL 没解出来的符号"（低分辨率一维码），那些由它补上。
         for (b in zb) merge(out, b)
+        for (b in zx) merge(out, b)
 
         lastMs = System.currentTimeMillis() - t0
         notes += "zebra(${if (zebraAvailable) "on" else "off"})=${zb.size} zxing=${zx.size} 合并=${out.size}"

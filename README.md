@@ -1,9 +1,11 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V1.9（2026-10-20，正式签名安装包）** — 逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；
-细节见 `docs/V1.0~V1.9-版本记录.md`；封版回归 `python tools/regress.py`（退出码 0 = 通过）。
+**当前版本：V2.0（2026-10-30）** — 框线/码制/字号/纸尺寸四件事闭环，详见 `docs/V2.0-版本记录.md`；
+逐版改动见 `docs/修改记录.md`（含安装包体积/sha256/签名指纹）；细节见 `docs/V1.0~V1.9-版本记录.md`；
+封版回归 `python tools/regress.py`（退出码 0 = 通过；V2.0 改了码制发射，基线需重录）。
 
-**装机包**：`out/label-reprint-V1.9-release.apk`（433 MiB，模型全部内嵌，无需联网）。
+**当前装机包**：`android-app/app/build/outputs/apk/debug/app-debug.apk`（debug，`versionName=2.0`）；
+V1.9 正式签名包仍在 `out/label-reprint-V1.9-release.apk`（433 MiB，模型全部内嵌，无需联网）。
 ⚠️ **AI Data Capture SDK 必须用 4.0.6**：4.1.0 在 TC201（QCS6690 / Android 15）上初始化直接抛
 `AI Vision SDK is not supported`（Zebra 自家 App 同样崩），4.0.6 不限机型。条码模型 `barcode-decoder-5.0.4` 不变。
 签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。

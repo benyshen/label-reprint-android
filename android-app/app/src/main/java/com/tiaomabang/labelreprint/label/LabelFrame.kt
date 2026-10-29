@@ -13,6 +13,7 @@ import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import com.tiaomabang.labelreprint.pipeline.ImageMeasure
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
@@ -73,6 +74,11 @@ object LabelFrame {
          * 检出时 [working] 已被校正成标签本身，取景框不再代表内容范围。
          */
         val frameRect: FloatArray? = null,
+        /**
+         * 印刷边框在**校正图**里的位置（占画布比例 [左,上,右,下]）。只有 basis="quad" 时有值：
+         * 四点定位已经把边框拉到这个位置上，流水线直接用，不必再"猜"边线。
+         */
+        val frameInset: FloatArray? = null,
         val note: String,
     )
 
@@ -88,8 +94,25 @@ object LabelFrame {
                 note = "OpenCV 未装载，跳过标签边框检测（按整幅图映射）",
             )
         }
+        // 纸边优先（实测这张 9 个要素、只差纵向压缩），四点定位退为兜底：
+        // 预先把四点定位跑在纸边检测之前会挑到框内/托盘的正确率更差（实测长宽比 0.39、
+        // 要素 107 个、模块宽掉到 0.9 点）。
         val quad = detectQuad(bitmap)
         if (quad == null) {
+            // 纸边检不出（白纸贴浅色背景，对比度太低；实测相机照片必挂）：改用**印刷黑框**
+            // 的四点定位。印刷框是闭合深色矩形，findContours 一抓一个准，而且它才是复刻的
+            // 真实坐标参照 —— 纸边多出来的撕裂边/白边本来就不该参与映射。
+            val fq = detectFrameQuadChecked(bitmap)
+            if (fq != null) {
+                val warped = warpFrameQuad(bitmap, fq)
+                return Prep(
+                    working = warped, basis = "quad",
+                    template = pinnedTemplate ?: ZplGeometry.templateForAspect(warped.width, warped.height),
+                    quad = fq, rotated90 = false,
+                    frameInset = FRAME_INSET.copyOf().let { d -> FloatArray(d.size) { d[it].toFloat() } },
+                    note = "纸边未检出，改用印刷边框四点定位（已按模板内缩拉正）",
+                )
+            }
             // 没检出标签边框：把**取景框**矩形交给流水线，让它丢掉框外的识别结果。
             // 为什么不直接裁剪像素：标签长宽比和模板不一致时（比如 2.4:1 的条带放进 3:2 的框），
             // 按框裁会把标签两端切掉 —— 少识别几个字可以重拍，缺了条码右半截就只能重来。
@@ -126,6 +149,175 @@ object LabelFrame {
     }
 
     /** 最大的亮/暗四边形（面积 >= 帧的 20%），找不到返回 null。镜像 label_frame.py: detect_label_quad。 */
+    /** 印刷边框在校正图里的位置（占画布比例 左,上,右,下）。取自已验证的 PC 输出：
+     *  ^FO51..516 / ^FT111..483（559 点画布）-> [.0912, .1986, .9231, .8640] */
+    private val FRAME_INSET = doubleArrayOf(0.0912, 0.1986, 0.9231, 0.8640)
+    /**
+     * detectFrameQuad 的自检包装：四边形必须像标签才认。
+     * 真机踩过：候选组合偶尔会给出长宽比 0.39 / 0.89 的畸形梯形（四边长 782/503/329/696），
+     * 拉正后要素从 9 个涨到 116 个、条码模块宽掉到 0.9 点 —— 不如不认。
+     */
+    fun detectFrameQuadChecked(src: Bitmap): List<Pair<Double, Double>>? {
+        val q = detectFrameQuad(src) ?: return null
+        val sides = listOf(
+            dist(q[0], q[1]), dist(q[1], q[2]), dist(q[2], q[3]), dist(q[3], q[0]),
+        )
+        if (sides.min() < 1.0) return null
+        if (sides.max() / sides.min() > 1.35) return null        // 四边长短差太多 = 畸形
+        val wAvg = (sides[0] + sides[2]) / 2.0
+        val hAvg = (sides[1] + sides[3]) / 2.0
+        val ar = max(wAvg, hAvg) / max(1.0, min(wAvg, hAvg))
+        if (ar < 1.20 || ar > 1.52) return null                  // 印刷框真实 1.25
+        return q
+    }
+
+    /** 印刷框真实长宽比：PC 已验证输出里 ^FO51..516 / ^FT111..483 -> 465/372 */
+    private const val FRAME_AR = 1.357f   // 63.2mm x 46.6mm（旧值 1.25 是横向被压缩 8.6% 的假值）
+
+    /**
+     * 印刷黑框的四点定位：多阈值 + RETR_LIST + 长宽比筛选 + 打分。
+     *
+     * 为什么不用现有 [detectQuad]：它用 Otsu 单阈值 + RETR_EXTERNAL 取最大轮廓，
+     * 白纸贴浅蓝布的相机照片上 Otsu 把纸和背景分到一起，标签轮廓直接消失（真机实测
+     * "没检出标签边框"）。固定多档阈值 + LIST 模式能稳定抓到那个闭合黑框。
+     */
+    /**
+     * 印刷黑框的四点定位（v4）：长直线两两组合候选矩形，按面积**从小到大**取第一个
+     * 长宽比符合模板的，再对四条边做最小二乘拟合求交点。
+     *
+     * 为什么不用闭合轮廓：真机照片上它抓到的是透明塑料盒（盒边 ar 1.248 恰好落在筛选区间），
+     * 盒边和印刷框不平行，拉正后文字/条码全是歪的。为什么不用 Otsu 单阈值：白纸贴浅蓝布
+     * 时纸和背景被分到一起，标签轮廓直接消失。
+     * 为什么面积升序：托盘/背景都在印刷框外面、面积更大；框内各单元格长宽比都极端
+     * （品名格 6.0、条码格 3.3），不会落进 1.15~1.35。
+     */
+    fun detectFrameQuad(src: Bitmap): List<Pair<Double, Double>>? {
+        if (src.width < 64 || src.height < 64) return null
+        val bmp = if (src.config != Bitmap.Config.ARGB_8888) src.copy(Bitmap.Config.ARGB_8888, false) else src
+        val k = min(1.0, DETECT_LONG_SIDE / max(bmp.width, bmp.height).toDouble())
+        val small = if (k < 1.0) {
+            Bitmap.createScaledBitmap(
+                bmp, max(64, (bmp.width * k).toInt()), max(64, (bmp.height * k).toInt()), true,
+            )
+        } else bmp
+        val sw = small.width
+        val sh = small.height
+        val gray = ImageMeasure.toGray(small)
+        val rules = ImageMeasure.detectRules(gray, sw, sh)
+        val hs = rules.filter { it[2] - it[0] >= it[3] - it[1] && it[2] - it[0] >= 0.35f * sw }
+        val vs = rules.filter { it[2] - it[0] < it[3] - it[1] && it[3] - it[1] >= 0.30f * sh }
+        if (hs.size < 2 || vs.size < 2) return null
+
+        class Cand(
+            val area: Float, val dar: Float,
+            val top: List<Float>, val bot: List<Float>,
+            val left: List<Float>, val right: List<Float>,
+        )
+        val cands = ArrayList<Cand>()
+        for (i in hs.indices) for (j in i + 1 until hs.size) {
+            val a = hs[i]; val b = hs[j]
+            val top = if (a[1] + a[3] < b[1] + b[3]) a else b
+            val bot = if (a[1] + a[3] < b[1] + b[3]) b else a
+            for (p in vs.indices) for (q in p + 1 until vs.size) {
+                val l = vs[p]; val r = vs[q]
+                val left = if (l[0] + l[2] < r[0] + r[2]) l else r
+                val right = if (l[0] + l[2] < r[0] + r[2]) r else l
+                val bw = right[2] - left[0]
+                val bh = bot[3] - top[1]
+                if (bw <= 0f || bh <= 0f) continue
+                val area = bw * bh / (sw.toFloat() * sh)
+                if (area < 0.20f || area > 0.85f) continue
+                val ar = bw / bh
+                if (ar < 1.20f || ar > 1.52f) continue
+                cands.add(Cand(area, Math.abs(ar - FRAME_AR), top, bot, left, right))
+            }
+        }
+        cands.sortWith(compareBy({ it.area }, { it.dar }))
+        for (c in cands) {
+            val quad = cornersFromLines(gray, sw, sh, c.top, c.bot, c.left, c.right) ?: continue
+            // 缩略图坐标 -> 原图坐标
+            return quad.map { (it.first / k) to (it.second / k) }
+        }
+        return null
+    }
+
+    /** 四条边各自最小二乘拟合后求交点；透视下边是斜的，不能用 bbox 中线代替 */
+    private fun cornersFromLines(
+        gray: IntArray, w: Int, h: Int,
+        top: List<Float>, bot: List<Float>, left: List<Float>, right: List<Float>,
+    ): List<Pair<Double, Double>>? {
+        val ft = fitLine(gray, w, h, top, true) ?: return null
+        val fb = fitLine(gray, w, h, bot, true) ?: return null
+        val fl = fitLine(gray, w, h, left, false) ?: return null
+        val fr = fitLine(gray, w, h, right, false) ?: return null
+        fun inter(lh: Pair<Double, Double>, lv: Pair<Double, Double>): Pair<Double, Double>? {
+            val den = 1.0 - lv.first * lh.first
+            if (Math.abs(den) < 1e-6) return null
+            val x = (lv.first * lh.second + lv.second) / den
+            return x to (lh.first * x + lh.second)
+        }
+        return listOfNotNull(
+            inter(ft, fl), inter(ft, fr), inter(fb, fr), inter(fb, fl),
+        ).takeIf { it.size == 4 }
+    }
+
+    /** horiz=true: 按列取墨迹中位行, 拟合 y=a*x+b；false: 按行取中位列, 拟合 x=a*y+b */
+    private fun fitLine(
+        gray: IntArray, w: Int, h: Int, b: List<Float>, horiz: Boolean,
+    ): Pair<Double, Double>? {
+        val a0 = max(0, b[0].toInt()); val a1 = min(if (horiz) w - 1 else h - 1, (if (horiz) b[2] else b[3]).toInt())
+        val c0 = max(0, b[1].toInt()); val c1 = min(if (horiz) h - 1 else w - 1, (if (horiz) b[3] else b[2]).toInt())
+        val pad = max(2, c1 - c0)
+        val lo = max(0, c0 - pad); val hi = min(if (horiz) h - 1 else w - 1, c1 + pad)
+        var n = 0.0; var su = 0.0; var sv = 0.0; var suu = 0.0; var suv = 0.0
+        var u = a0
+        while (u <= a1) {
+            val hits = ArrayList<Int>()
+            var v = lo
+            while (v <= hi) {
+                val px = if (horiz) gray[v * w + u] else gray[u * w + v]
+                if (px < 180) hits.add(v)
+                v++
+            }
+            if (hits.isNotEmpty()) {
+                val mv = hits[hits.size / 2].toDouble()
+                n++; su += u; sv += mv; suu += u.toDouble() * u; suv += u * mv
+            }
+            u += 2
+        }
+        if (n < 8) return null
+        val den = n * suu - su * su
+        if (Math.abs(den) < 1e-9) return null
+        val slope = (n * suv - su * sv) / den
+        return slope to ((sv - slope * su) / n)
+    }
+
+    /** 把印刷边框拉到 [FRAME_INSET] 指定的位置上（1000x1000 画布），还原成纸面坐标 */
+    fun warpFrameQuad(src: Bitmap, quad: List<Pair<Double, Double>>): Bitmap {
+        // 画布必须是纸张真实点阵 608x560（76x70mm @8点/mm）；用 1000x1000 正方形
+        // 会把 1.086 的纸压成 1.0，横向再丢 8.6%。
+        val nW = 608.0
+        val nH = 560.0
+        val s = MatOfPoint2f(
+            Point(quad[0].first, quad[0].second), Point(quad[1].first, quad[1].second),
+            Point(quad[2].first, quad[2].second), Point(quad[3].first, quad[3].second),
+        )
+        val d = MatOfPoint2f(
+            Point(FRAME_INSET[0] * nW, FRAME_INSET[1] * nH), Point(FRAME_INSET[2] * nW, FRAME_INSET[1] * nH),
+            Point(FRAME_INSET[2] * nW, FRAME_INSET[3] * nH), Point(FRAME_INSET[0] * nW, FRAME_INSET[3] * nH),
+        )
+        val bmp = if (src.config != Bitmap.Config.ARGB_8888) src.copy(Bitmap.Config.ARGB_8888, false) else src
+        val rgba = Mat()
+        Utils.bitmapToMat(bmp, rgba)
+        val m = Imgproc.getPerspectiveTransform(s, d)
+        val out = Mat()
+        Imgproc.warpPerspective(rgba, out, m, Size(nW, nH), Imgproc.INTER_CUBIC)
+        val bm = Bitmap.createBitmap(out.cols(), out.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(out, bm)
+        rgba.release(); out.release()
+        return bm
+    }
+
     fun detectQuad(src: Bitmap): List<Pair<Double, Double>>? {
         if (src.width < 32 || src.height < 32) return null
         val bmp = if (src.config != Bitmap.Config.ARGB_8888) {

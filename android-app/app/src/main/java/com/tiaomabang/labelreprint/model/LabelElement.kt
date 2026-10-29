@@ -1,6 +1,6 @@
 package com.tiaomabang.labelreprint.model
 
-enum class ElementKind { BARCODE_1D, BARCODE_2D, TEXT }
+enum class ElementKind { BARCODE_1D, BARCODE_2D, TEXT, BOX }
 
 /**
  * 识别出来的一个打印要素。不可变 + copy()：Compose 的 StateFlow 靠 equals 判变化，
@@ -16,6 +16,14 @@ data class LabelElement(
     val dots: List<Float> = listOf(0f, 0f, 0f, 0f), // 标签点阵坐标 x0,y0,x1,y1
     val conf: Float = 1f,
     val source: String = "",          // zxing / ocr / user
+    /** 内部码制键（ean13/code128/…）：决定发 ^BE 还是 ^BC，见 ZplGeometry.symbology */
+    val symbology: String = "",
+    /** 墨迹尺寸（照片像素）：字号必须按墨迹算，OCR 行框比字形胖 10~20% */
+    val inkPxW: Float = 0f,
+    val inkPxH: Float = 0f,
+    /** 墨迹尺寸（点）：layout 时由 inkPx × scale 换算，ZplBuilder 只用这一份 */
+    val inkW: Float = 0f,
+    val inkH: Float = 0f,
 ) {
     val w: Float get() = dots[2] - dots[0]
     val h: Float get() = dots[3] - dots[1]

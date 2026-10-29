@@ -6,6 +6,8 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -301,7 +303,12 @@ private fun PhotoWithBoxes(bitmap: Bitmap, elements: List<LabelElement>, modifie
                 )
                 drawRect(Color.Black, box.topLeft, box.size, style = Stroke(width = 5.5f))
                 drawRect(
-                    color = if (e.kind == ElementKind.TEXT) Color.White else accent,
+                    color = when (e.kind) {
+                        ElementKind.TEXT -> Color.White
+                        // 框线用琥珀色：它常常和条码框重叠，同色会看不出哪个是检出的线
+                        ElementKind.BOX -> Color(0xFFFFC107)
+                        else -> accent
+                    },
                     topLeft = box.topLeft,
                     size = box.size,
                     style = Stroke(width = 2.5f),
@@ -348,13 +355,15 @@ private fun EditDialog(
 
 /** ZPL 只实现了 ^BC(128)/^B3(39)/^BQ(QR)，码制选项就限定在这三种，不让用户选到打不出的 */
 private fun formatsFor(kind: ElementKind): List<String> = when (kind) {
-    ElementKind.BARCODE_1D -> listOf("Code 128", "Code 39")
+    ElementKind.BARCODE_1D -> listOf("Code 128", "Code 39", "EAN-13", "EAN-8", "UPC-A", "ITF")
     ElementKind.BARCODE_2D -> listOf("QR Code")
     ElementKind.TEXT -> emptyList()
+    ElementKind.BOX -> emptyList()
 }
 
 private fun kindLabel(kind: ElementKind): String = when (kind) {
     ElementKind.BARCODE_1D -> "一维条码"
     ElementKind.BARCODE_2D -> "二维码"
     ElementKind.TEXT -> "文字"
+    ElementKind.BOX -> "框线"
 }

@@ -16,7 +16,7 @@ MM_PER_INCH = 25.4
 # --- templates: the only place label sizes live -----------------------------
 TEMPLATES = {
     1: {"name": "模板1", "w_mm": 60.0, "h_mm": 40.0, "dpi": 203},
-    2: {"name": "模板2", "w_mm": 70.0, "h_mm": 70.0, "dpi": 203},
+    2: {"name": "模板2", "w_mm": 76.0, "h_mm": 70.0, "dpi": 203},   # 整张纸 76x70mm（实测）
     3: {"name": "模板3", "w_mm": 70.0, "h_mm": 100.0, "dpi": 203},
 }
 DEFAULT_TEMPLATE = 1
@@ -78,6 +78,9 @@ GUARD = 6            # dots of vertical guard for the overflow check
 FONT_CAP_RATIO = 0.775
 # ^A@ + SimSun: 汉字字高 ≈ 字号本身（0.775 是 ^A0N 内置字体的比值）
 CAP_RATIO_CJK = 1.0
+#: 印出来的墨迹宽 / 推进宽（zpl-core 实测）。照片里量到的是墨迹宽，反推字号要除回来。
+WIDTH_SLACK = 0.92
+FONT_GAIN = 1.15   # 字号整体补偿：实测整版偏小一号
 # 汉字/全角标点的推进宽度 = 1 em；ASCII 约 0.5 em
 CHAR_W_CJK = 1.0
 # average advance width per character per size for ^A0N (proportional font).
@@ -112,14 +115,17 @@ def font_size_for(box_w, box_h, text):
     cap = CAP_RATIO_CJK if any(ord(c) > 0x2E80 for c in text) else FONT_CAP_RATIO
     fs_h = box_h / cap
     fs_w = box_w / max(1e-6, text_width(text, 1.0))
-    return max(8, int(round(min(fs_h, fs_w))))
+    # 实测整版字号统一小一号（12~15%）：双约束取 min 后偏保守，统一放大 1.15
+    return max(8, int(round(min(fs_h, fs_w) * FONT_GAIN)))
 
 
 # --- anchor offsets ---------------------------------------------------------
 def anchor_dy(kind, **kw):
     """offset from the element's TOP pixel row to the ZPL field anchor row."""
     if kind == "text":                     # always emitted with ^FB
-        return kw.get("lines", 1) * kw["font_size"]
+        # +12 点 = 1.5mm @203dpi：原式 lines×字号 会让整版文字偏高（真机实测），
+        # 只影响文字，不动框线/条码。
+        return kw.get("lines", 1) * kw["font_size"] + TEXT_BASELINE_FIX
     if kind == "barcode1d":
         return kw["bar_height"]
     if kind == "barcode2d":
@@ -128,6 +134,9 @@ def anchor_dy(kind, **kw):
 
 
 # --- symbology capacities ---------------------------------------------------
+TEXT_BASELINE_FIX = 12   # 文字基线校正：1.5mm @203dpi（8 点/mm），真机实测偏高
+
+
 def code128_modules(n_chars, digits_only=False):
     """11 × 符号数 + 35（起始 + 校验 + 终止）。
 
@@ -179,3 +188,90 @@ def qr_modules_for_text(text):
 def code39_modules(n_chars):
     """Code 39: start/stop + chars, 13 modules per char incl. narrow inter-char gap, + 1 bar."""
     return 16 * (n_chars + 2) + 1
+
+
+# ---------------------------------------------------------------------------
+# 1D symbology: which ^B command to emit, and how wide the symbol really is
+# ---------------------------------------------------------------------------
+# zxing（Android 与 Python 两端）报告的 format 名 -> 内部码制键。
+# 教训：V1.9 不看码制，界面上量到什么内容一律发 ^BC（Code128），
+# 结果 EAN-13 的内容被印成 Code128 —— 纸面 HRI 分组变成 `934024"512123`，
+# 扫描器回读报 Code128 而不是 EAN-13。
+SYMBOLOGY = {
+    "EAN-13": "ean13", "EAN13": "ean13", "EAN_13": "ean13",
+    "EAN-8": "ean8", "EAN8": "ean8", "EAN_8": "ean8",
+    "UPC-A": "upca", "UPCA": "upca", "UPC_A": "upca",
+    "UPC-E": "upce", "UPCE": "upce", "UPC_E": "upce",
+    "ITF": "i2of5", "I2OF5": "i2of5", "I2O5": "i2of5", "ITF-14": "i2of5", "ITF14": "i2of5",
+    "Code 128": "code128", "Code128": "code128", "CODE128": "code128", "CODE_128": "code128",
+    "Code 39": "code39", "Code39": "code39", "CODE39": "code39", "CODE_39": "code39",
+    "CODE_39_EXTENDED": "code39", "Code 39 Extended": "code39",
+    "Code 93": "code93", "Code93": "code93", "CODE93": "code93", "CODE_93": "code93",
+    "Codabar": "codabar", "CODABAR": "codabar",
+}
+
+#: 固定模块数的零售码。zpl-core photo.py:_FIXED_MODULES —— 通用估算给 EAN-13 算成 178 模块，
+#: 模块宽被砍一半，打出来比原码窄 10mm（用户拍的原标签 vs 复刻件最明显的差别之一）。
+FIXED_MODULES = {"ean13": 95, "upca": 95, "ean8": 67, "upce": 51}
+
+#: 码制 -> ZPL 命令（zpl-core builder.py:BARCODE_SPECS，按手册 Format 行核对过）
+BARCODE_CMD = {"ean13": "^BE", "ean8": "^B8", "upca": "^B9", "upce": "^B0",
+               "i2of5": "^B2", "code128": "^BC", "code39": "^B3", "code93": "^BA",
+               "codabar": "^BK"}
+
+
+def symbology(format_name):
+    """zxing format 名 -> 码制键。认不出的 1D 码按 code128 发（V1.9 的老行为，至少能扫）。"""
+    return SYMBOLOGY.get(str(format_name or "").strip(), "code128")
+
+
+def barcode_modules(sym, text):
+    """符号总模块数。固定宽度的零售码必须用真值，其余按结构公式估（只影响模块宽推算）。"""
+    n = max(1, len(text or ""))
+    if sym in FIXED_MODULES:
+        return FIXED_MODULES[sym]
+    if sym == "code128":
+        return code128_modules(n, (text or "").isdigit())
+    if sym == "code39":
+        return code39_modules(n)
+    if sym == "code93":
+        return 9 * n + 28          # 9 模块/字符 + 起始/校验/终止 + 终止条
+    if sym == "i2of5":
+        return 8 * n + 9           # 每对数字 16 模块（ratio 2.5）+ 起始/终止
+    if sym == "codabar":
+        return 11 * n + 21         # 每字符 10 模块 + 1 模块间隙 + 起止符
+    return code128_modules(n, (text or "").isdigit())
+
+
+def hri_forced(sym):
+    """这类码制的明文行（HRI）是符号的一部分：EAN/UPC/ITF 规范要求印出来。"""
+    return sym in ("ean13", "ean8", "upca", "upce", "i2of5")
+
+
+def _fmt_num(v):
+    return str(int(v)) if float(v) == int(v) else str(v)
+
+
+def barcode_1d_field(sym, x, anchor, module_width, bar_height, interp):
+    """^BY + ^FT + 码制命令 + 明文行开关。参数顺序按各命令手册的 Format 行，两端逐字节一致。"""
+    mw, bh = _fmt_num(module_width), int(bar_height)
+    f = "Y" if interp else "N"
+    head = f"^BY{mw},2.5,{bh}^FT{x},{anchor}"
+    if sym == "ean13":
+        return f"{head}^BEN,{bh},{f},N"          # ^BE o,h,f,g
+    if sym == "ean8":
+        return f"{head}^B8N,{bh},{f},N"          # ^B8 o,h,f,g
+    if sym == "upca":
+        return f"{head}^B9N,{bh},{f},N,N"        # ^B9 o,h,f,g,e
+    if sym == "upce":
+        return f"{head}^B0N,N,{bh},{f},N"        # ^B0 o,e,h,f,g
+    if sym == "i2of5":
+        return f"{head}^B2N,{bh},{f},N,N,N"      # ^B2 o,h,f,g,e,j
+    if sym == "code39":
+        return f"{head}^B3N,N,{bh},{f},N"        # ^B3 o,e,h,f,g
+    if sym == "code93":
+        return f"{head}^BAN,{bh},{f},N,N"        # ^BA o,h,f,g,e
+    if sym == "codabar":
+        return f"{head}^BKN,N,{bh},{f},N,A,A"    # ^BK o,e,h,f,g,k,l
+    return f"{head}^BCN,{bh},{f},N,N"            # ^BC o,h,f,g,e
+

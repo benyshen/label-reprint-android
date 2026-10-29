@@ -694,6 +694,12 @@ class OcrEngine(
         }
         val fb = detInput
         fb.clear()
+        // **limit 必须压到本次真实元素数**：这个缓冲是复用的，只增不减；上一次网络是
+        // 736x864（缓存 1,907,712 个 float），这一次 736x832 只要 1,837,056 个，
+        // clear() 只把 limit 置回 capacity，于是 ORT 直接抛
+        // "Shape [1,3,736,832] requires 1837056 elements but the buffer has 1907712"，
+        // 用户看到的就是"识别失败"（除了宽高比刚好是 832/864 的那种照片，其余都能过）。
+        fb.limit(size)
         return fb
     }
 

@@ -1,6 +1,13 @@
 package com.tiaomabang.labelreprint.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import com.tiaomabang.labelreprint.zpl.ZplGeometry
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +58,40 @@ import com.tiaomabang.labelreprint.ui.theme.ZebraPalette
  * 能不能连、要不要先配对、扫不扫得到，全都不同。混在一个"设备列表"里，
  * 用户看到 ZD421 没出现就会以为打印机坏了 —— 其实它只在 BLE 广播里。
  */
+/** 标签纸尺寸卡片：写进 ZplGeometry 的自定义模板，并持久化到 prefs */
+@Composable
+private fun LabelSizeCard(onCustomSize: (String, String) -> Unit) {
+    val size = ZplGeometry.customSize()
+    var wTxt by remember { mutableStateOf(size.first.toInt().toString()) }
+    var hTxt by remember { mutableStateOf(size.second.toInt().toString()) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(ZebraPalette.SurfaceLow, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("标签纸尺寸（自定义模板）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "按整张纸的实际毫米数填，默认 76×70。ZPL 画布按 8 点/mm 换算：76mm → ^PW608。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = wTxt,
+                onValueChange = { wTxt = it.filter(Char::isDigit).take(3); onCustomSize(wTxt, hTxt) },
+                label = { Text("宽 mm") }, singleLine = true, modifier = Modifier.width(110.dp),
+            )
+            OutlinedTextField(
+                value = hTxt,
+                onValueChange = { hTxt = it.filter(Char::isDigit).take(3); onCustomSize(wTxt, hTxt) },
+                label = { Text("高 mm") }, singleLine = true, modifier = Modifier.width(110.dp),
+            )
+        }
+    }
+}
+
 @Composable
 fun PrinterScreen(
     ui: PrinterUi,
@@ -71,6 +112,7 @@ fun PrinterScreen(
     onAutoConnect: (Boolean) -> Unit,
     onTestPrint: () -> Unit,
     onCalibrate: () -> Unit,
+    onCustomSize: (String, String) -> Unit = { _, _ -> },
 ) {
     Column(Modifier.fillMaxSize()) {
         // ---------- 标题行 ----------
@@ -102,6 +144,10 @@ fun PrinterScreen(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // 纸尺寸是**打印机/耗材**的属性，跟拍照姿势无关，放这一页最顺；
+            // 之前盖在取景框上那两块输入框很难点到（用户反馈无法修改），已挪走。
+            LabelSizeCard(onCustomSize)
+
             PrinterStatusCard(
                 ui = ui,
                 busy = busy,

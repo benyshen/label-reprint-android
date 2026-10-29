@@ -53,6 +53,7 @@ import com.tiaomabang.labelreprint.barcode.BarcodeEngine
 import com.tiaomabang.labelreprint.barcode.HybridBarcodeEngine
 import com.tiaomabang.labelreprint.barcode.ZebraBarcodeEngine
 import com.tiaomabang.labelreprint.barcode.ZxingCppEngine
+import com.tiaomabang.labelreprint.model.ElementKind
 import com.tiaomabang.labelreprint.model.ReprintPlan
 import com.tiaomabang.labelreprint.ocr.InferenceBackend
 import com.tiaomabang.labelreprint.ocr.PaddleOcrEngine
@@ -242,6 +243,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 读回用户上次设的自定义标签纸尺寸。
+        // 必须放在 onCreate：Activity 对象在 attachBaseContext 之前构造，
+        // 写在 init{} 里 getSharedPreferences 的 context 还是 null（实测启动即崩）。
+        run {
+            val sp = getSharedPreferences("label", MODE_PRIVATE)
+            val cw = sp.getFloat("customW", 76f).toDouble()
+            val chh = sp.getFloat("customH", 70f).toDouble()
+            if (cw > 10 && chh > 10) ZplGeometry.setCustomSize(cw, chh)
+        }
         injected = extrasKey(intent)
         engineKind = engineKindOf(intent)
         readPrintExtras(intent)
@@ -398,6 +409,16 @@ class MainActivity : ComponentActivity() {
                         onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
                         onTestPrint = ::printTestPage,
                         onCalibrate = ::calibratePrinter,
+                        onCustomSize = { w, h ->
+                            val wv = w.toDoubleOrNull() ?: 0.0
+                            val hv = h.toDoubleOrNull() ?: 0.0
+                            if (wv > 10 && hv > 10) {
+                                ZplGeometry.setCustomSize(wv, hv)
+                                getSharedPreferences("label", MODE_PRIVATE).edit()
+                                    .putFloat("customW", wv.toFloat())
+                                    .putFloat("customH", hv.toFloat()).apply()
+                            }
+                        },
                     )
                 } else if (screen == "result" && p != null && bmp != null) {
                     ResultPane(
@@ -903,7 +924,13 @@ class MainActivity : ComponentActivity() {
         when (edit) {
             is ElementEdit.Delete -> if (edit.index in list.indices) list.removeAt(edit.index)
             is ElementEdit.Text -> list[edit.index] = list[edit.index].copy(text = edit.value, source = "user")
-            is ElementEdit.Format -> list[edit.index] = list[edit.index].copy(format = edit.value, source = "user")
+            // 换码制必须同时重算 symbology：ZplBuilder 只看 symbology 决定发 ^BE 还是 ^BC，
+            // 只改 format 会让"选了 EAN-13 却还发 Code128"（V1.9 那个 bug 的翻版）
+            is ElementEdit.Format -> list[edit.index] = list[edit.index].copy(
+                format = edit.value, source = "user",
+                symbology = if (list[edit.index].kind == ElementKind.BARCODE_1D)
+                    ZplGeometry.symbology(edit.value) else "",
+            )
         }
         // 编辑后必须重排重出 ZPL（坐标从 px 重算）：只改内容不重排，旧 ZPL 里还是老数据
         val next = LabelPipeline.remap(p, list, p.template)
@@ -1038,7 +1065,9 @@ class MainActivity : ComponentActivity() {
 
     private fun runFile(path: String): Pair<ReprintPlan?, String> {
         val bmp = BitmapFactory.decodeFile(path) ?: return null to "文件读不到：$path"
-        return analyze(bmp, File(path).name, withOcr = false)
+        // --es ocr 1 才跑 OCR：默认关（脚本回归只看条码/几何时省一半时间），
+        // 但验证"框线+字号"必须开 —— 文字要素和框线都来自图像分析，不开 OCR 就只剩条码。
+        return analyze(bmp, File(path).name, withOcr = intent?.hasExtra("ocr") == true)
     }
 
     private fun runDiag(name: String): Pair<ReprintPlan?, String> {
@@ -1088,6 +1117,7 @@ class MainActivity : ComponentActivity() {
             prep.working, engine, prep.template, basis = prep.basis,
             ocr = if (withOcr) { b -> ocr.lines(b) } else null,
             contentRect = prep.frameRect,   // 没检出标签边框时：只认取景框内的内容
+            frameInset = prep.frameInset,   // 印刷边框四点定位：边框位置已知，不再靠检测
         )
         // 两个引擎的 ZPL 分开打标签：ZPLZ 走 DL 模型，ZPL 走混合/zxing，
         // 这样 tools/device_zpl_check.py（对 PC 端 zxing）不会被 DL 的结果串味。
