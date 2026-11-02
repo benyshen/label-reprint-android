@@ -1,5 +1,6 @@
 package com.tiaomabang.labelreprint.zpl
 
+import com.tiaomabang.labelreprint.model.LabelElement
 import kotlin.math.roundToInt
 
 /**
@@ -281,10 +282,11 @@ object ZplGeometry {
         moduleWidth: Double,
         barHeight: Int,
         hri: Boolean,
+        ratio: Double = DEFAULT_BY_RATIO,
     ): String {
         val mw = fmtNum(moduleWidth)
         val f = if (hri) "Y" else "N"
-        val head = "^BY$mw,2.5,$barHeight^FT$x,$anchor"
+        val head = "^BY$mw,${fmtNum(ratio)},$barHeight^FT$x,$anchor"
         val cmd = when (sym) {
             "ean13" -> "^BEN,$barHeight,$f,N"
             "ean8" -> "^B8N,$barHeight,$f,N"
@@ -297,6 +299,32 @@ object ZplGeometry {
             else -> "^BCN,$barHeight,$f,N,N"
         }
         return head + cmd
+    }
+
+    /** `^BY n,m` 里 m 的默认值（条宽比）。现场旧标签几乎都是 2.5 */
+    const val DEFAULT_BY_RATIO = 2.5
+
+    /**
+     * 文字自动字号 —— ZplBuilder 与「编辑要素」弹窗**共用这一份**。
+     * 弹窗要显示"自动值"让用户在此基础上加减，若两边各写一套公式，弹窗里的数字
+     * 就会和实际打出来的字号对不上（用户会以为改坏了）。
+     */
+    fun autoFontSize(e: LabelElement, labelW: Int): Int {
+        val x = roundHalf(e.dots[0].toDouble())
+        val maxW = maxOf(40, labelW - MARGIN - x)
+        val inkW = if (e.inkW > 0f) e.inkW else (e.dots[2] - e.dots[0])
+        val inkH = if (e.inkH > 0f) e.inkH else (e.dots[3] - e.dots[1])
+        val budgetW = maxOf(20.0, minOf(maxW.toDouble(), inkW / WIDTH_SLACK))
+        return fontSizeFor(budgetW, inkH.toDouble(), e.text)
+    }
+
+    /** 条码模块宽 ^BY 的 n（自动值）—— 同上，供弹窗显示 */
+    fun autoModuleWidth(e: LabelElement): Double {
+        val sym = e.symbology.ifEmpty { symbology(e.format) }
+        val modules = barcodeModules(sym, e.text)
+        if (modules <= 0) return MIN_MODULE_DOTS
+        val derived = (e.dots[2] - e.dots[0]) / modules
+        return maxOf(MIN_MODULE_DOTS, Math.round(minOf(derived, 10f) * 2) / 2.0)
     }
 
     internal fun fmtNum(v: Double): String =

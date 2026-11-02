@@ -404,7 +404,11 @@ object LabelPipeline {
     private fun belowAndOverlapping(line: List<Float>, bc: List<Float>): Boolean {
         val bh = bc[3] - bc[1]
         val gap = line[1] - bc[3]
-        if (gap < 0f || gap > 1.2f * bh) return false
+        // 允许少量负间隙：条码解码框常把下方人眼可读串的顶边一起包进来
+        // （TC201 实测 gap = -11px，条高 266 → -0.04bh），原来要求 gap >= 0
+        // 就会把这一行当成独立文字再印一遍（纸上多一行乱码数字）。
+        // 条码上方的文字 gap 会远小于 -0.25bh，仍然排除。
+        if (gap < -0.25f * bh || gap > 1.2f * bh) return false
         val hov = min(line[2], bc[2]) - maxOf(line[0], bc[0])
         return hov > 0.3f * (line[2] - line[0])
     }

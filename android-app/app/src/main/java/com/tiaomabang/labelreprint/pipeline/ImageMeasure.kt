@@ -2,6 +2,7 @@ package com.tiaomabang.labelreprint.pipeline
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.util.Log
 
 /**
  * 从位图上直接量几何（镜像 `tools/label_to_zpl.py` 里的同名函数）。
@@ -12,6 +13,8 @@ import android.graphics.Color
  * 条高就是 2 点 —— 打出来只剩一条细线。
  */
 object ImageMeasure {
+
+    private const val TAG = "LABELREPRINT"
 
     /** ARGB_8888 -> 亮度数组（Rec.601，与 PC 端 cv2 灰度基本一致） */
     fun toGray(bitmap: Bitmap): IntArray {
@@ -117,7 +120,333 @@ object ImageMeasure {
      *
      * 返回 [x0,y0,x1,y1]（像素）。
      */
+    /**
+     * 框线识别入口：Hough 找线 → 端点 → 垂直剖面校验 → 聚成表格（详见 houghRules 的注释）。
+     * 一条线都找不到时回退旧实现，保证干净扫描件上的老行为不变。
+     */
     fun detectRules(gray: IntArray, w: Int, h: Int, excludePx: List<List<Float>> = emptyList()): List<List<Float>> {
+        val t0 = System.currentTimeMillis()
+        val ink = inkMask(gray, w, h)
+        // 纸面亮度门槛只算一次：放进 verifyRule 里逐条线重算会把整幅图排序几十次，
+        // 真机上直接卡到 ANR（实测 991x1600 一百多条候选）。
+        val lvl = paperLevel(gray)
+        val hs = dropExcluded(houghRules(ink, gray, w, h, true, lvl), excludePx, w)
+        val vs = dropExcluded(houghRules(ink, gray, w, h, false, lvl), excludePx, w)
+        val grid = buildGrid(hs, vs, w, h)
+        Log.i(TAG, "RULES >>> H=${hs.size} V=${vs.size} box=${grid.size} " +
+            "${System.currentTimeMillis() - t0}ms h=" + hs.joinToString(",") { "${it.pos.toInt()}" } +
+            " v=" + vs.joinToString(",") { "${it.pos.toInt()}" } +
+            " grid=" + grid.joinToString(" ") { "${it[0].toInt()},${it[1].toInt()}-${it[2].toInt()},${it[3].toInt()}" })
+        // 找不到表格就返回空：旧启发式在真机照片上会把纸箱/托盘的暗行全当框线，
+        // 实测一张图吐 71 个要素，比"少画几根线"糟得多。干净扫描件的回归由内置样图覆盖。
+        return grid
+    }
+
+    /** 纸面亮度门槛：抽样取 60 分位再打 0.86 折（曝光偏暗的现场照片纸面只有 150 上下） */
+    private fun paperLevel(gray: IntArray): Int {
+        val stride = 8
+        val n = gray.size / stride + 1
+        val vals = IntArray(n)
+        var i = 0
+        var k = 0
+        while (i < gray.size) { vals[k++] = gray[i]; i += stride }
+        java.util.Arrays.sort(vals)
+        return (0.86f * vals[(k * 0.6f).toInt().coerceIn(0, k - 1)]).toInt()
+    }
+
+    /**
+     * 剔掉落在排除区（条码框）里的线：条码的上/下沿是一条又长又黑的可疑横线，
+     * 实测 224209 那张会被当成表格线打出来。
+     */
+    private fun dropExcluded(rules: List<Rule>, boxes: List<List<Float>>, w: Int): List<Rule> {
+        if (boxes.isEmpty()) return rules
+        return rules.filter { rl ->
+            val len = rl.b - rl.a
+            val covered = boxes.sumOf { bx ->
+                if (bx.size < 4) 0.0 else {
+                    val x0 = minOf(bx[0], bx[2]); val x1 = maxOf(bx[0], bx[2])
+                    val y0 = minOf(bx[1], bx[3]); val y1 = maxOf(bx[1], bx[3])
+                    if (rl.horiz) {
+                        if (rl.pos < y0 - 4 || rl.pos > y1 + 4) 0.0
+                        else (minOf(rl.b, x1) - maxOf(rl.a, x0)).coerceAtLeast(0f).toDouble()
+                    } else {
+                        if (rl.pos < x0 - 4 || rl.pos > x1 + 4) 0.0
+                        else (minOf(rl.b, y1) - maxOf(rl.a, y0)).coerceAtLeast(0f).toDouble()
+                    }
+                }
+            }
+            covered < 0.5 * len
+        }
+    }
+
+    /** 检测到的一条线（横线用 pos=y 中线，竖线用 pos=x 中线） */
+    private class Rule(
+        val horiz: Boolean,
+        val theta: Double,
+        val rho: Double,
+        var a: Float,
+        var b: Float,
+    ) {
+        var pos = 0f
+    }
+
+    /**
+     * 自适应阈值墨迹图：局部均值 − c。比全局阈值抗反光/抗阴影。
+     * 用积分图算局部均值，O(w·h)。
+     */
+    private fun inkMask(gray: IntArray, w: Int, h: Int, block: Int = 41, c: Int = 10): ByteArray {
+        val r = block / 2
+        val bw = w + 1
+        val integ = LongArray(bw * (h + 1))
+        for (y in 0 until h) {
+            var rowSum = 0L
+            val base = y * w
+            val ib = (y + 1) * bw
+            val pb = y * bw
+            for (x in 0 until w) {
+                rowSum += gray[base + x].toLong()
+                integ[ib + x + 1] = integ[pb + x + 1] + rowSum
+            }
+        }
+        val ink = ByteArray(w * h)
+        for (y in 0 until h) {
+            val y0 = maxOf(0, y - r); val y1 = minOf(h - 1, y + r)
+            for (x in 0 until w) {
+                val x0 = maxOf(0, x - r); val x1 = minOf(w - 1, x + r)
+                val area = (x1 - x0 + 1).toLong() * (y1 - y0 + 1)
+                val s = integ[(y1 + 1) * bw + x1 + 1] - integ[y0 * bw + x1 + 1] -
+                    integ[(y1 + 1) * bw + x0] + integ[y0 * bw + x0]
+                val mean = (s / area).toInt()
+                if (gray[y * w + x] < mean - c) ink[y * w + x] = 1
+            }
+        }
+        return ink
+    }
+
+    /**
+     * Hough 找近水平（或近垂直）线。
+     *
+     * 为什么必须 Hough：现场照片里印刷表格线斜 2~6°，一条横线在**单独一行**里只剩下
+     * 15~25% 的墨迹（其余部分跑到上下相邻行去了），所以"某行最长墨迹段 ≥22% 图宽"这种
+     * 判据会 4 条线全漏（旧实现实测如此），反倒是深色背景的连续暗行满足条件，纸上打出一堆乱框。
+     * Hough 在 (theta, rho) 空间累加，同一根线无论斜多少、中间断多少，都会汇到一个峰上。
+     */
+    private fun houghRules(ink: ByteArray, gray: IntArray, w: Int, h: Int, horiz: Boolean, lvl: Int): List<Rule> {
+        val scale = 2
+        val sw = w / scale
+        val sh = h / scale
+        if (sw < 32 || sh < 32) return emptyList()
+        // 半分辨率墨迹点（2x2 块里有一个墨点就算）。用原始 int 数组：
+        // 一开始用 ArrayList<Int>，40 万点装箱后在真机上 GC 抖动，光这一步就要十几秒。
+        var px = IntArray(sw * sh / 4 + 16)
+        var py = IntArray(sw * sh / 4 + 16)
+        var n = 0
+        for (y in 0 until sh) {
+            val sy = y * scale
+            for (x in 0 until sw) {
+                val sx = x * scale
+                var hit = false
+                outer@ for (dy in 0 until scale) {
+                    val row = (sy + dy) * w + sx
+                    for (dx in 0 until scale) if (ink[row + dx].toInt() != 0) { hit = true; break@outer }
+                }
+                if (hit) {
+                    if (n == px.size) { px = px.copyOf(n * 2); py = py.copyOf(n * 2) }
+                    px[n] = x; py[n] = y; n++
+                }
+            }
+        }
+        if (n == 0) return emptyList()
+        val rng = 10.0
+        val step = 0.5
+        val maxBase = (if (horiz) sh - 1 else sw - 1).toDouble()
+        val maxOther = (if (horiz) sw - 1 else sh - 1).toDouble()
+        val rhoMax = (maxBase + Math.tan(Math.toRadians(rng)) * maxOther).toInt() + 4
+        val thr = maxOf(8, (0.16 * (if (horiz) sw else sh)).toInt())
+        val pTheta = ArrayList<Double>()
+        val pRho = ArrayList<Double>()
+        val pCnt = ArrayList<Int>()
+        var ang = -rng
+        val counts = IntArray(rhoMax + 1)
+        while (ang <= rng + 1e-9) {
+            java.util.Arrays.fill(counts, 0)
+            val tn = Math.tan(Math.toRadians(ang))
+            for (i in 0 until n) {
+                val base = if (horiz) py[i] else px[i]
+                val other = if (horiz) px[i] else py[i]
+                val rho = (base - tn * other).toInt()
+                if (rho in 0..rhoMax) counts[rho]++
+            }
+            for (r in 0..rhoMax) {
+                val cv = counts[r]
+                if (cv < thr) continue
+                var locMax = true
+                for (d in -2..2) {
+                    val rr = r + d
+                    if (rr in 0..rhoMax && counts[rr] > cv) { locMax = false; break }
+                }
+                if (locMax) { pTheta.add(ang); pRho.add(r.toDouble() * scale); pCnt.add(cv) }
+            }
+            ang += step
+        }
+        if (pTheta.isEmpty()) return emptyList()
+        // 只留最强的 40 个峰：文字行、条码竖条都会成峰，全量校验纯属浪费
+        val order = pCnt.indices.sortedByDescending { pCnt[it] }.take(40)
+
+        // 抽样墨迹点（全分辨率、隔点取）用于量端点
+        var ax = IntArray(w * h / 16 + 16)
+        var ay = IntArray(w * h / 16 + 16)
+        var m = 0
+        var yy = 0
+        while (yy < h) {
+            var xx = 0
+            while (xx < w) {
+                if (ink[yy * w + xx].toInt() != 0) {
+                    if (m == ax.size) { ax = ax.copyOf(m * 2); ay = ay.copyOf(m * 2) }
+                    ax[m] = xx; ay[m] = yy; m++
+                }
+                xx += scale
+            }
+            yy += scale
+        }
+        if (m == 0) return emptyList()
+        val scratch = IntArray(m)
+        val out = ArrayList<Rule>()
+        val need = 0.2 * (if (horiz) w else h)
+        for (pi in order) {
+            val tn = Math.tan(Math.toRadians(pTheta[pi]))
+            val rho = pRho[pi]
+            var k = 0
+            for (i in 0 until m) {
+                val base = if (horiz) ay[i] else ax[i]
+                val other = if (horiz) ax[i] else ay[i]
+                if (Math.abs(base - tn * other - rho) <= 2.0) { scratch[k++] = if (horiz) ax[i] else ay[i] }
+            }
+            if (k < need) continue
+            val s = scratch.copyOf(k)
+            java.util.Arrays.sort(s)
+            // 最长连续段：孤立墨点（条码、反光、纸边）会把跨度拉宽两三百像素
+            val gapMax = maxOf(6, (0.02 * (if (horiz) w else h)).toInt())
+            var bestLo = 0; var bestHi = -1; var start = 0
+            for (i in 1..k) {
+                if (i == k || s[i] - s[i - 1] > gapMax) {
+                    if (s[i - 1] - s[start] > bestHi - bestLo) { bestLo = s[start]; bestHi = s[i - 1] }
+                    start = i
+                }
+            }
+            if (bestHi - bestLo < need) continue
+            val rule = Rule(horiz, pTheta[pi], rho, bestLo.toFloat(), bestHi.toFloat())
+            if (!verifyRule(gray, w, h, rule, lvl)) continue
+            out.add(rule)
+        }
+        // 共线合并：按**中线位置**判同一根线。一开始比的是 (theta, rho)，同一条线被不同
+        // 角度检出时 rho 会差二十几像素（rho 是截距，随角度变），合并不掉，实测一条线变三条。
+        out.sortBy { it.pos }
+        val mergeTol = maxOf(12f, 0.02f * h)
+        val merged = ArrayList<Rule>()
+        for (it in out) {
+            val last = merged.lastOrNull()
+            if (last != null && Math.abs(last.pos - it.pos) <= mergeTol &&
+                (minOf(last.b, it.b) - maxOf(last.a, it.a)) > -0.15f * (it.b - it.a)
+            ) {
+                last.a = minOf(last.a, it.a); last.b = maxOf(last.b, it.b)
+            } else merged.add(it)
+        }
+        return merged
+    }
+
+    /**
+     * 校验：沿线段取若干样本，要求"线芯比两侧暗"。两侧取的是**垂直方向 ±7px** 的中位数，
+     * 所以纸面明暗渐变不影响判断；而纸边/折痕的线芯并不比两侧暗，正好被挡掉。
+     */
+    private fun verifyRule(gray: IntArray, w: Int, h: Int, rl: Rule, lvl: Int, samples: Int = 41): Boolean {
+        val tn = Math.tan(Math.toRadians(rl.theta))
+        val cores = IntArray(samples)
+        val sides = IntArray(samples)
+        var k = 0
+        for (i in 0 until samples) {
+            val f = i / (samples - 1.0)
+            val a = rl.a + f * (rl.b - rl.a)
+            if (rl.horiz) {
+                val y = (rl.rho + tn * a)
+                if (y < 8 || y >= h - 9) continue
+                val x = a.toInt()
+                if (x < 0 || x >= w) continue
+                val yi = Math.round(y).toInt()
+                cores[k] = gray[yi * w + x]
+                sides[k] = minOf(gray[(yi - 7) * w + x], gray[(yi + 7) * w + x])
+            } else {
+                val x = (rl.rho + tn * a)
+                if (x < 8 || x >= w - 9) continue
+                val y = a.toInt()
+                if (y < 0 || y >= h) continue
+                val xi = Math.round(x).toInt()
+                cores[k] = gray[y * w + xi]
+                sides[k] = minOf(gray[y * w + xi - 7], gray[y * w + xi + 7])
+            }
+            k++
+        }
+        if (k < 8 || k < 0.5 * samples) return false
+        val core = median(cores, k)
+        val side = median(sides, k)
+        if (side <= lvl || core >= side - 12) return false
+        rl.pos = (rl.rho + tn * ((rl.a + rl.b) / 2f)).toFloat()
+        return true
+    }
+
+    private fun median(arr: IntArray, n: Int): Int {
+        val s = arr.copyOf(n)
+        java.util.Arrays.sort(s)
+        return s[n / 2]
+    }
+
+    /**
+     * 聚成表格：横线按跨度重叠聚簇 → 取中位跨度当左右边框 → 补齐缺失的竖线。
+     *
+     * 现实是现场照片有残余透视（左右竖边框倾斜甚至不一致），逐条还原畸变没有意义；
+     * 原标签的表格本来就是矩形，所以按中位值重建成规整矩形，出来的 ZPL 才像标签。
+     */
+    private fun buildGrid(hs: List<Rule>, vs: List<Rule>, w: Int, h: Int): List<List<Float>> {
+        if (hs.size < 2) return emptyList()
+        val tol = maxOf(12f, 0.02f * h)
+        val sorted = hs.sortedBy { it.pos }
+        val base = sorted.maxByOrNull { it.b - it.a } ?: return emptyList()
+        var cluster = sorted.filter {
+            val ov = minOf(base.b, it.b) - maxOf(base.a, it.a)
+            ov >= 0.5f * minOf(base.b - base.a, it.b - it.a)
+        }.ifEmpty { sorted }.toMutableList()
+        if (cluster.size < 3 && hs.size > cluster.size) cluster = sorted.toMutableList()
+        cluster.sortBy { it.pos }
+        val uniq = ArrayList<Rule>()
+        for (it in cluster) {
+            val last = uniq.lastOrNull()
+            if (last != null && Math.abs(it.pos - last.pos) < tol) {
+                if (it.b - it.a > last.b - last.a) uniq[uniq.size - 1] = it
+            } else uniq.add(it)
+        }
+        val spanMed = uniq.map { it.b - it.a }.sorted()[uniq.size / 2]
+        val keep = uniq.filter { it.b - it.a <= 1.15f * spanMed && it.pos > 0.02f * h && it.pos < 0.97f * h }
+        if (keep.size < 2) return emptyList()
+        val xl = keep.map { minOf(it.a, it.b) }.sorted()[keep.size / 2]
+        val xr = keep.map { maxOf(it.a, it.b) }.sorted()[keep.size / 2]
+        if (xr - xl < 0.15f * w) return emptyList()
+        val yt = keep.minOf { it.pos }
+        val yb = keep.maxOf { it.pos }
+        val out = ArrayList<List<Float>>()
+        for (it in keep) {
+            out.add(listOf(xl, it.pos - 1.5f, xr, it.pos + 1.5f))
+        }
+        for (want in floatArrayOf(xl, xr)) {
+            val cand = vs.filter {
+                Math.abs(it.pos - want) <= 0.04f * w && it.b - it.a > 0.3f * h
+            }.maxByOrNull { it.b - it.a }
+            val x = cand?.pos ?: want
+            out.add(listOf(x - 1.5f, yt, x + 1.5f, yb))
+        }
+        return out
+    }
+
+    fun detectRulesLegacy(gray: IntArray, w: Int, h: Int, excludePx: List<List<Float>> = emptyList()): List<List<Float>> {
         val minFrac = 0.22f
         val bridge = maxOf(4, w / 200)
         val pad = maxOf(3, w / 200)

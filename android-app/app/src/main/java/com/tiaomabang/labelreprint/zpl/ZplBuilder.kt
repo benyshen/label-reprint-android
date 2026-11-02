@@ -34,10 +34,14 @@ object ZplBuilder {
                     val derived = e.w / modules
                     // 见 ZplGeometry.MIN_MODULE_DOTS：1 点模块宽的 Code128 会印糊，
                     // 扫描器测不准条宽就退化判成 Code 39（用户实际遇到的现象）。
-                    var mw = maxOf(ZplGeometry.MIN_MODULE_DOTS,
+                    // 用户手动设了 ^BY 的 n 就照他的来（缩放条码唯一的手段），只做宽度护栏。
+                    val userMw = e.byN > 0f
+                    var mw = if (userMw) e.byN.toDouble()
+                    else maxOf(ZplGeometry.MIN_MODULE_DOTS,
                         Math.round(minOf(derived, 10f) * 2) / 2.0)
+                    val ratio = if (e.byM > 0f) e.byM.toDouble() else ZplGeometry.DEFAULT_BY_RATIO
                     val barH = e.h.roundToInt()
-                    if (derived < ZplGeometry.MIN_MODULE_DOTS) {
+                    if (!userMw && derived < ZplGeometry.MIN_MODULE_DOTS) {
                         warnings += "条码「${e.text}」原图模块宽仅 ${"%.1f".format(derived)} 点，" +
                             "向上取到可印下限 ${fmtNum(mw)} 点（低于下限会被扫成别的码制）"
                     }
@@ -46,15 +50,16 @@ object ZplBuilder {
                             warnings += "条码「${e.text}」按可印下限 ${fmtNum(mw)} 点需 ${modules * mw} 点，" +
                                 "超过右侧留白（$usable 点），已占用到距标签边 ${ZplGeometry.GUARD} 点"
                         } else {
+                            val want = mw
                             mw = maxOf(1.0, phys.toDouble() / modules)
-                            warnings += "条码「${e.text}」$modules 模块按可印下限需 " +
-                                "${ZplGeometry.MIN_MODULE_DOTS * modules} 点 > 可打印宽度 $phys 点，" +
-                                "已压到 ${"%.1f".format(mw)} 点（可能扫不出：考虑换更大的标签或缩短内容）"
+                            warnings += "条码「${e.text}」$modules 模块 × ${fmtNum(want)} 点 = " +
+                                "${fmtNum(want * modules)} 点 > 可打印宽度 $phys 点，" +
+                                "已压到 ${"%.1f".format(mw)} 点（可能扫不出：调小缩放或换更大的标签）"
                         }
                     }
                     val anchor = top + ZplGeometry.anchorDyBarcode1d(barH)
                     // 码制按识别结果发：^BE/^B8/^B9/^B0/^B2/^BC/^B3/^BA/^BK
-                    field = ZplGeometry.barcode1dField(sym, x, anchor, mw, barH, e.hri)
+                    field = ZplGeometry.barcode1dField(sym, x, anchor, mw, barH, e.hri, ratio)
                     field += "^FD${e.text}^FS"
                     bottom = anchor
                 }
@@ -84,11 +89,18 @@ object ZplBuilder {
                     val inkW = if (e.inkW > 0f) e.inkW else e.w
                     val inkH = if (e.inkH > 0f) e.inkH else e.h
                     val budgetW = maxOf(20.0, minOf(maxW.toDouble(), inkW / ZplGeometry.WIDTH_SLACK))
-                    var fs = ZplGeometry.fontSizeFor(budgetW, inkH.toDouble(), e.text)
+                    // 用户设了字号就照他的来（自动值由 ZplGeometry.autoFontSize 算出，
+                    // 弹窗显示的也是同一个函数的结果，两边不会打架）
+                    val userFs = e.fsOverride > 0
+                    val wantFs = if (userFs) e.fsOverride else ZplGeometry.autoFontSize(e, w)
+                    var fs = wantFs
                     // 硬兜底：字号超过字段宽时打印机**不是截断，而是把字符挤着叠印**（纸上就是
                     // 用户报的"文字重合"）。实测 31 字符中文行在 416 点字段里用 26 号字需要 858 点。
                     // 宁可小一号，也绝不超宽。
                     while (fs > 8 && ZplGeometry.textWidth(e.text, fs) > maxW) fs -= 1
+                    if (userFs && fs != wantFs) {
+                        warnings += "字号 $wantFs 会让「${e.text}」超宽（${maxW} 点字段），已按 $fs 点输出"
+                    }
                     val anchor = top + ZplGeometry.anchorDyText(fs)
                     val font = if (ZplGeometry.isCjk(e.text)) "^A@N,$fs,$fs,E:SIMSUN.TTF" else "^A0N,$fs,$fs"
                     field = "^FT$x,$anchor$font^FB$maxW,1,0,L,0^FD${e.text}^FS"

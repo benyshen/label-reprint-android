@@ -24,6 +24,12 @@ data class LabelElement(
     /** 墨迹尺寸（点）：layout 时由 inkPx × scale 换算，ZplBuilder 只用这一份 */
     val inkW: Float = 0f,
     val inkH: Float = 0f,
+    /** 用户指定的字号（打印点）：0 = 按墨迹自动算。只对 TEXT 生效 */
+    val fsOverride: Int = 0,
+    /** 用户指定的条码模块宽 ^BY 的 n（点）：0 = 按原图推算。只对 BARCODE_1D 生效 */
+    val byN: Float = 0f,
+    /** 用户指定的条宽比 ^BY 的 m：0 = 默认 2.5。只对 BARCODE_1D 生效 */
+    val byM: Float = 0f,
 ) {
     val w: Float get() = dots[2] - dots[0]
     val h: Float get() = dots[3] - dots[1]

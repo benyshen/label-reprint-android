@@ -44,6 +44,7 @@ import com.tiaomabang.labelreprint.ui.theme.ZebraTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -66,12 +67,15 @@ import com.tiaomabang.labelreprint.print.PrinterPrefs
 import com.tiaomabang.labelreprint.print.Transport
 import com.tiaomabang.labelreprint.print.ZebraGateway
 import com.tiaomabang.labelreprint.print.listPairedDevices
+import org.opencv.core.Point
 import com.tiaomabang.labelreprint.ui.CameraPane
 import com.tiaomabang.labelreprint.ui.ElementEdit
 import com.tiaomabang.labelreprint.ui.LinkPhase
 import com.tiaomabang.labelreprint.ui.PrinterScreen
 import com.tiaomabang.labelreprint.ui.PrinterUi
+import com.tiaomabang.labelreprint.ui.QuadCropPane
 import com.tiaomabang.labelreprint.ui.ResultPane
+import com.tiaomabang.labelreprint.ui.defaultQuad
 import com.tiaomabang.labelreprint.zpl.ZplGeometry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -128,8 +132,18 @@ class MainActivity : ComponentActivity() {
     private var injected by mutableStateOf<String?>(null)
 
     // ---- 界面状态 ----
-    private var screen by mutableStateOf("camera")          // camera | result
+    private var screen by mutableStateOf("camera")          // camera | quad | result
     private var photo by mutableStateOf<Bitmap?>(null)
+
+    // ---- 手动四点标定（doc-scan-demo 已验证方案，拍照后先标定再识别）----
+    /** 待标定的照片：拍照/相册进来先到这，四点确认后才进识别 */
+    private var quadPhoto by mutableStateOf<Bitmap?>(null)
+    /** 用户拖的四个角点（图像像素坐标）。SnapshotStateList：拖动时 Compose 自动重组 */
+    private val quadPoints = mutableStateListOf<Point>()
+    /** 点按放角点的下一个序号（0→3 循环）：用户"点四个角"比"拖四个小手柄"顺手得多 */
+    private var quadTapNext = 0
+    /** 最近一次识别用的四点：重跑/调角都沿用它，不退回自动检测 */
+    private var lastManualQuad: List<Point>? = null
 
     /**
      * 最近一次识别的原始图 / 校正图。
@@ -420,6 +434,24 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                     )
+                } else if (screen == "quad" && quadPhoto != null) {
+                    QuadCropPane(
+                        photo = quadPhoto!!,
+                        quad = quadPoints,
+                        status = status,
+                        busy = busy,
+                        onDrag = { i, p ->
+                            if (i in quadPoints.indices) {
+                                quadPoints[i] = p
+                                quadTapNext = (i + 1) % 4
+                            }
+                        },
+                        onTapPoint = ::placeQuadPoint,
+                        onAutoPrefill = ::autoPrefillQuad,
+                        onReset = ::resetQuad,
+                        onWarp = ::warpAndProcess,
+                        onRetake = ::reshoot,
+                    )
                 } else if (screen == "result" && p != null && bmp != null) {
                     ResultPane(
                         bitmap = bmp, plan = p, status = status, busy = busy, useOcr = useOcr,
@@ -430,6 +462,7 @@ class MainActivity : ComponentActivity() {
                             template = t
                             plan = LabelPipeline.remap(p, p.elements, t)
                         },
+                        onRequad = ::backToQuad,
                         onReshoot = ::reshoot,
                         onReanalyze = { reprocess() },   // 同一张照片重跑整链，不碰相机
                         version = appVersion,
@@ -781,6 +814,12 @@ class MainActivity : ComponentActivity() {
             status = "相机还没就绪"
             return
         }
+        Log.i(TAG, "SHOOT >>> 触发拍照 screen=$screen")
+        // 不在拍照页就不拍：标定/结果页上任何误触（外部输入、按键映射）都不该再触发一次拍照
+        if (screen != "camera") {
+            Log.w(TAG, "SHOOT >>> 忽略：当前不在拍照页（$screen）")
+            return
+        }
         busy = true
         status = "拍摄中…"
         cap.takePicture(ContextCompat.getMainExecutor(this),
@@ -867,13 +906,131 @@ class MainActivity : ComponentActivity() {
         photo = use
         // 70mm 标签大约占画面 35%：据此估一维码有多少像素，低于 120px 基本解不出
         Log.i(TAG, "PHOTO >>> $from ${use.width}x${use.height} 一维码估计宽度=${"%.0f".format(use.width * 0.35f)}px")
-        process(use, from)
+        enterQuad(use, from)
+    }
+
+    /**
+     * 第 2 步：进手动四点标定页。
+     *
+     * 自动检测只用来**预填**（省一次拖动），最终以用户标的为准 —— doc-scan-demo 实测：
+     * 白纸贴浅色背景、透明托盘、反光这些场景自动四边形检测必挂，手动四点一次就对。
+     * 注入链（`--es all/file/asset`）不走这里：脚本回归仍按自动检测整链跑。
+     */
+    private fun enterQuad(bmp: Bitmap, from: String) {
+        quadPhoto = bmp
+        quadPoints.clear()
+        quadPoints.addAll(
+            lastManualQuad?.filter { it.x in 0.0..bmp.width.toDouble() && it.y in 0.0..bmp.height.toDouble() }
+                ?: defaultQuad(bmp.width, bmp.height)
+        )
+        if (quadPoints.size != 4) {
+            quadPoints.clear()
+            quadPoints.addAll(defaultQuad(bmp.width, bmp.height))
+        }
+        lastManualQuad = null
+        quadTapNext = 0
+        busy = false
+        screen = "quad"
+        status = "拖四个圆点对准标签四角（点按顺序任意），再点「矫正并识别」；自动检测不准时可点「自动预填」试一次"
+        // 标定页不显示取景画面：解绑相机省内存（重拍时 reshoot 会重新绑）
+        runCatching { provider?.unbindAll() }
+        cameraReady = false
+        Log.i(TAG, "QUAD >>> 进入标定 from=$from ${bmp.width}x${bmp.height}")
+    }
+
+    /** 自动预填：detectQuad 跑在后台线程（OpenCV findContours，不能卡 UI） */
+    private fun autoPrefillQuad() {
+        val bmp = quadPhoto ?: return
+        Thread {
+            val auto = runCatching { LabelFrame.detectQuad(bmp) }.getOrNull()
+            runOnUiThread {
+                if (auto != null && auto.size == 4 && quadPhoto === bmp) {
+                    quadPoints.clear()
+                    quadPoints.addAll(auto.map { Point(it.first, it.second) })
+                    status = "已按自动检测预填四角（仅作参考）：拖圆点对准标签四角后点「矫正并识别」"
+                    Log.i(TAG, "QUAD >>> 自动预填 " + auto.joinToString(" ") {
+                        "(${"%.0f".format(it.first)},${"%.0f".format(it.second)})"
+                    })
+                } else {
+                    status = "没检出标签边框：手动把四个圆点拖到标签四角，再点「矫正并识别」"
+                }
+            }
+        }.start()
+    }
+
+    private fun resetQuad() {
+        val bmp = quadPhoto ?: return
+        quadPoints.clear()
+        quadPoints.addAll(defaultQuad(bmp.width, bmp.height))
+        status = "已重置为默认框（四边内缩 8%）：点图片放角点，或拖圆点对准标签四角"
+    }
+
+    /**
+     * 点按放角点：按 ①→②→③→④ 的顺序把点放到手指处（第 5 下回到 ①）。
+     *
+     * 为什么要有这个：大多数人是"在图上点四个角"，而不是"先找到那个 8px 的小圆点再拖"。
+     * 只支持拖动时，点按图片什么都不会发生，用户以为已经标好了，出来的却是默认框。
+     */
+    private fun placeQuadPoint(p: Point) {
+        val bmp = quadPhoto ?: return
+        if (quadPoints.size != 4) {
+            quadPoints.clear()
+            quadPoints.addAll(defaultQuad(bmp.width, bmp.height))
+            quadTapNext = 0
+        }
+        val i = quadTapNext % 4
+        quadPoints[i] = p
+        quadTapNext = (i + 1) % 4
+        val n = quadTapNext + 1
+        status = "已放置第 ${i + 1} 点（${p.x.toInt()},${p.y.toInt()}）；下一按放第 $n 点，" +
+            "四点可随便按顺序，系统会自动归位。按住圆点拖动可微调。"
+        Log.i(TAG, "QUAD >>> 点按放第 ${i + 1} 点 (${"%.0f".format(p.x)},${"%.0f".format(p.y)})")
+    }
+
+    /** 矫正并识别：四点 → 透视校正成正视图 → 条码/OCR/框体识别 → ZPL */
+    private fun warpAndProcess() {
+        val bmp = quadPhoto ?: return
+        if (quadPoints.size != 4) {
+            status = "四个角点没摆好（当前 ${quadPoints.size} 个点）"
+            return
+        }
+        val pts = quadPoints.map { Point(it.x, it.y) }
+        // 自交/凹四边形会让透视变换出畸形图（"出来的不是标的区域"），先拦下讲清楚
+        val problem = LabelFrame.quadProblem(pts)
+        if (problem != null) {
+            status = "$problem：请重新点四个角（左上→右上→右下→左下，或任意顺序）"
+            Log.w(TAG, "QUAD >>> 四点自检不通过：$problem")
+            return
+        }
+        lastManualQuad = pts
+        Log.i(TAG, "QUAD >>> 手动四点 " + pts.joinToString(" ") {
+            "(${"%.0f".format(it.x)},${"%.0f".format(it.y)})"
+        })
+        process(bmp, "手动四点", pts)
+    }
+
+    /** 结果页「调四角」：回标定页（原图 + 上次的四点），不用重新拍照 */
+    private fun backToQuad() {
+        val bmp = lastRaw ?: quadPhoto ?: return
+        quadPhoto = bmp
+        val reuse = lastManualQuad
+        if (reuse != null && reuse.size == 4) {
+            quadPoints.clear()
+            quadPoints.addAll(reuse)
+        } else if (quadPoints.size != 4) {
+            quadPoints.clear()
+            quadPoints.addAll(defaultQuad(bmp.width, bmp.height))
+        }
+        busy = false
+        screen = "quad"
+        status = "拖动圆点调整四角，再点「矫正并识别」"
     }
 
     private fun reprocess() {
         // 从**原始图**重跑：photo 可能是上一次校正过的标签图，再校正一次会二次透视变换
         val bmp = lastRaw ?: photo ?: return
-        process(bmp, "重跑")
+        // 手动标定过的沿用手动四点（用户标的就是对的，重跑不该偷偷换回自动检测）
+        process(bmp, "重跑", lastManualQuad)
     }
 
     private fun reshoot() {
@@ -882,16 +1039,19 @@ class MainActivity : ComponentActivity() {
         photo = null
         lastRaw = null
         lastWorking = null
+        quadPhoto = null
+        quadPoints.clear()
+        lastManualQuad = null
         template = ZplGeometry.DEFAULT_TEMPLATE
         status = "对准标签拍照"
         if (hasCameraPermission()) bindCamera()
     }
 
-    private fun process(bmp: Bitmap, name: String) {
+    private fun process(bmp: Bitmap, name: String, manualQuad: List<Point>? = null) {
         busy = true
         status = "识别中…（$name）"
         Thread {
-            val r = runCatching { analyze(bmp, "$name.png", useOcr) }
+            val r = runCatching { analyze(bmp, "$name.png", useOcr, manualQuad) }
             runOnUiThread {
                 busy = false
                 val (p, msg) = r.getOrNull() ?: (null to "识别失败：${r.exceptionOrNull()?.message}")
@@ -905,6 +1065,7 @@ class MainActivity : ComponentActivity() {
                     plan = withNote
                     template = withNote.template     // 同步自动选出的模板，界面 chip 与后续重排都以它为准
                     photo = lastWorking ?: bmp  // 显示校正后的标签图：要素框就是在它上面量的
+                    quadPhoto = null             // 标定页用完就放掉（原图还在 lastRaw 里）
                     screen = "result"
                     // 结果页不再需要取景器：解绑相机，省电也免得预览占着相机内存
                     runCatching { provider?.unbindAll() }
@@ -931,10 +1092,21 @@ class MainActivity : ComponentActivity() {
                 symbology = if (list[edit.index].kind == ElementKind.BARCODE_1D)
                     ZplGeometry.symbology(edit.value) else "",
             )
+            // 字号/缩放的改动必须跟着重排：只改字段不重排，ZPL 里还是老字号（和改内容同一个坑）
+            is ElementEdit.TextSize ->
+                if (edit.index in list.indices) list[edit.index] = list[edit.index].copy(
+                    fsOverride = edit.size, source = "user")
+            is ElementEdit.BarcodeScale ->
+                if (edit.index in list.indices) list[edit.index] = list[edit.index].copy(
+                    byN = edit.n, byM = edit.m, source = "user")
         }
         // 编辑后必须重排重出 ZPL（坐标从 px 重算）：只改内容不重排，旧 ZPL 里还是老数据
         val next = LabelPipeline.remap(p, list, p.template)
         plan = next
+        // 编辑后也要能看到最终 ZPL：字号/缩放对不对，只有看 ^A@N 与 ^BY 才确认得了
+        Log.i(TAG, "EDIT >>> ${edit.javaClass.simpleName} #${edit.index}")
+        Log.i(TAG, "ZPLE >>> ${next.imageName}\n${next.zpl.replace("\r\n", "\n")}")
+        next.warnings.forEach { Log.i(TAG, "WARN >>> $it") }
         status = "已更新，ZPL 已重算（${next.zplErrors.size} 个校验错误）"
     }
 
@@ -1099,16 +1271,37 @@ class MainActivity : ComponentActivity() {
      * [withOcr] 默认 false：`--es all 1` 这条回归链必须与 PC 端参考实现（只跑条码）逐字节可比，
      * 混进 OCR 文字要素就不可比了；界面上的流程走 [process]，按用户的开关来。
      */
-    private fun analyze(bmp: Bitmap, name: String, withOcr: Boolean): Pair<ReprintPlan?, String> {
+    private fun analyze(
+        bmp: Bitmap,
+        name: String,
+        withOcr: Boolean,
+        manualQuad: List<Point>? = null,
+    ): Pair<ReprintPlan?, String> {
         // RUN 行必须在解码之前：设备日志里"解码明细"行会跑在 PLAN 行之前，
         // 校验脚本按 PLAN 切块会把每张图的数据算到上一张头上（早期真踩过）。
-        Log.i(TAG, "RUN >>> $name ${bmp.width}x${bmp.height} engine=$engineKind ocr=$withOcr")
+        Log.i(TAG, "RUN >>> $name ${bmp.width}x${bmp.height} engine=$engineKind ocr=$withOcr " +
+            "manual=${manualQuad != null}")
         // 先"找标签 + 校正成正视图"，再选模板。直接在原图上映射只在**照片已裁到标签边**时成立：
         // 实测竖幅实拍（2449×3265，标签只占画面中间一块）按 full 映射后整体缩了一半，
         // 条码模块宽只剩 1 点 —— 用户看到的正是"条码和文字都偏小 + 被扫成 39 码"。
-        val prep = LabelFrame.prepare(bmp, if (templatePinned) template else null)
+        // 手动标定过就直接用用户标的四点（不再猜纸边/印刷框）。
+        val prep = if (manualQuad != null && manualQuad.size == 4) {
+            LabelFrame.prepareManual(bmp, manualQuad, if (templatePinned) template else null)
+        } else {
+            LabelFrame.prepare(bmp, if (templatePinned) template else null)
+        }
         lastRaw = bmp
         lastWorking = prep.working
+        // 调试钩子：--es savework 1 时把校正后的工作图落盘，方便在 PC 上量线框真值
+        if (intent?.getStringExtra("savework") == "1") {
+            try {
+                val f = java.io.File(getExternalFilesDir(null), "work_${System.currentTimeMillis()}.png")
+                java.io.FileOutputStream(f).use { prep.working.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                Log.i(TAG, "WORK >>> ${f.absolutePath} ${prep.working.width}x${prep.working.height}")
+            } catch (e: Exception) {
+                Log.w(TAG, "WORK >>> 保存失败 ${e.message}")
+            }
+        }
         Log.i(TAG, "FRAME >>> $name ${prep.basis} 模板${prep.template} ${prep.note}" +
             (prep.quad?.joinToString(" ", prefix = " quad=") {
                 "(${"%.0f".format(it.first)},${"%.0f".format(it.second)})"
@@ -1138,6 +1331,24 @@ class MainActivity : ComponentActivity() {
         p.warnings.forEach { Log.i(TAG, "WARN >>> $it") }
         p.zplErrors.forEach { Log.i(TAG, "ZPLERR >>> $it") }
         Log.i(TAG, "$zplTag >>> $name\n${p.zpl.replace("\r\n", "\n")}")
+        // `--es remap 1`：把识别结果原样再 remap 一次并打出来。用来验证 remap 是否幂等 ——
+        // 不幂等就说明"改一个字整版移位"是布局本身的问题，不是编辑功能的锅。
+        // `--es scaleedit 3.5`：给第 0 个条码设 ^BY n，用来回归编辑链路（不点 UI 也能验）
+        val se = intent?.getStringExtra("scaleedit")
+        if (se != null) {
+            val bar = p.elements.indexOfFirst {
+                it.kind == ElementKind.BARCODE_1D || it.kind == ElementKind.BARCODE_2D
+            }
+            // 600ms：等调用方把 analyze() 的返回值写进 plan，否则 applyEdit 会因为 plan==null 直接返回
+            if (bar >= 0) android.os.Handler(mainLooper).postDelayed({
+                applyEdit(ElementEdit.BarcodeScale(bar, se.toFloat(), 0f))
+                Log.i(TAG, "ELEMDOT >>> ${plan?.elements?.get(bar)?.dots}")
+            }, 600)
+        }
+        if (intent?.hasExtra("remap") == true) {
+            val r = LabelPipeline.remap(p, p.elements, p.template)
+            Log.i(TAG, "ZPLR >>> $name\n${r.zpl.replace("\r\n", "\n")}")
+        }
         return p to "$name 完成：${p.elements.size} 个要素，${p.zplErrors.size} 个错误"
     }
 

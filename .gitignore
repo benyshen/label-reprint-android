@@ -8,6 +8,14 @@ local.properties
 # 封版 APK（450MiB）不进版本库：文件留在 out/，哈希与体积记在 docs/V1.0-版本记录.md
 out/*.apk
 
+# 现场照片与调试截图不进库（共 240MB）：samples_field 是 14 张现场标签照片，
+# shots 是调参中间产物；要留的证据已经挑进 docs/images/
+samples_field/
+shots/
+
+# 使用手册的中间截图（12MB），成品 HTML 入库
+manual/img/
+
 # Python
 __pycache__/
 *.pyc

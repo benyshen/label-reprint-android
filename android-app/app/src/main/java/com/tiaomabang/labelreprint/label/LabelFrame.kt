@@ -148,6 +148,85 @@ object LabelFrame {
         )
     }
 
+    /**
+     * 手动四点标定（移植自 doc-scan-demo 已真机验证的手动平面矫正）：
+     * 用户拖的四个角点（点按顺序任意）→ 透视校正成正视图 → 条码/OCR/框体识别都在这张图上跑。
+     *
+     * 与自动路径的差别只有"四边形从哪来"：这里不再猜纸边/印刷框，用户标的就是标签本身 ——
+     * 白纸贴浅色背景、透明托盘、反光这些自动检测必挂的场景，手动四点一次就对。
+     * 校正后 basis 记 "label"（working 已是标签正面图，与自动检出纸边后等价），
+     * 下游 LabelPipeline 的映射、模板选择、ZPL 生成完全复用，不新增分支。
+     */
+    fun prepareManual(bitmap: Bitmap, quadPts: List<Point>, pinnedTemplate: Int? = null): Prep {
+        // OpenCV 没装载 / 点没摆齐：退回自动检测，至少不比原来差
+        if (!cvReady || quadPts.size != 4) return prepare(bitmap, pinnedTemplate)
+        val ordered = orderQuad(quadPts)
+        val quad = ordered.map { it.x to it.y }
+        // 退化保护：短边 < 长边 3% 说明用户把两个点拖到一起了（或几乎共线），
+        // 透视变换会把噪声放大成整幅色块 —— 这时退回自动检测，比出一张废图强。
+        val diagLong = max(
+            Math.hypot(quad[0].first - quad[2].first, quad[0].second - quad[2].second),
+            Math.hypot(quad[1].first - quad[3].first, quad[1].second - quad[3].second),
+        )
+        val sideShort = min(
+            Math.hypot(quad[0].first - quad[1].first, quad[0].second - quad[1].second),
+            Math.hypot(quad[2].first - quad[3].first, quad[2].second - quad[3].second),
+        )
+        if (diagLong <= 0.0 || sideShort < diagLong * 0.03) return prepare(bitmap, pinnedTemplate)
+
+        var warped = warpQuad(bitmap, quad)
+        val ar = warped.width.toDouble() / warped.height
+        val tpl = pinnedTemplate ?: ZplGeometry.templateForAspectRatio(ar)
+        var rotated = false
+        val tplAr = ZplGeometry.aspectRatio(tpl)
+        if (pinnedTemplate == null && abs(ln(ar / tplAr)) > abs(ln(ar / (1.0 / tplAr)))) {
+            warped = rotate90(warped)
+            rotated = true
+        }
+        return Prep(
+            working = warped, basis = "label", template = tpl, quad = quad, rotated90 = rotated,
+            note = "手动四点标定，校正为 ${warped.width}×${warped.height}" +
+                (if (rotated) "（转了 90°）" else ""),
+        )
+    }
+
+    /**
+     * 四点自检：正常返回 null，有问题返回给用户看的原因。
+     * 自交/凹四边形会让透视变换输出畸形图（用户看到"出来的不是我选的区域"就是这个），
+     * 面积过小则是四个点挤在一起。
+     */
+    fun quadProblem(pts: List<Point>): String? {
+        if (pts.size != 4) return "需要正好 4 个点"
+        val q = orderQuad(pts)
+        var sign = 0
+        for (i in 0 until 4) {
+            val a = q[i]; val b = q[(i + 1) % 4]; val c = q[(i + 2) % 4]
+            val cr = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+            if (abs(cr) < 1e-6) continue
+            val s = if (cr > 0) 1 else -1
+            if (sign == 0) sign = s else if (s != sign) return "四点交叉/凹陷（不是凸四边形）"
+        }
+        var area = 0.0
+        for (i in 0 until 4) {
+            val p = q[i]; val n = q[(i + 1) % 4]
+            area += p.x * n.y - n.x * p.y
+        }
+        if (abs(area) / 2.0 < 1000.0) return "四个点挤在一起（面积太小）"
+        return null
+    }
+
+    /**
+     * 任意顺序的四个点 → [tl,tr,br,bl]：左上 = x+y 最小、右下 = x+y 最大、
+     * 右上 = x−y 最大、左下 = x−y 最小。与 doc-scan-demo / PC 参考实现同一判据。
+     */
+    fun orderQuad(pts: List<Point>): List<Point> {
+        val tl = pts.minBy { it.x + it.y }
+        val br = pts.maxBy { it.x + it.y }
+        val tr = pts.maxBy { it.x - it.y }
+        val bl = pts.minBy { it.x - it.y }
+        return listOf(tl, tr, br, bl)
+    }
+
     /** 最大的亮/暗四边形（面积 >= 帧的 20%），找不到返回 null。镜像 label_frame.py: detect_label_quad。 */
     /** 印刷边框在校正图里的位置（占画布比例 左,上,右,下）。取自已验证的 PC 输出：
      *  ^FO51..516 / ^FT111..483（559 点画布）-> [.0912, .1986, .9231, .8640] */

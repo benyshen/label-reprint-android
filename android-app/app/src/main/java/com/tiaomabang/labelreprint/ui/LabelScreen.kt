@@ -12,12 +12,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
@@ -62,9 +65,14 @@ import com.tiaomabang.labelreprint.zpl.ZplGeometry
 
 /** 一个要素在「元素表」里改了什么，交给 Activity 去重排（UI 不碰几何） */
 sealed interface ElementEdit {
-    data class Text(val index: Int, val value: String) : ElementEdit
-    data class Format(val index: Int, val value: String) : ElementEdit
-    data class Delete(val index: Int) : ElementEdit
+    val index: Int
+    data class Text(override val index: Int, val value: String) : ElementEdit
+    data class Format(override val index: Int, val value: String) : ElementEdit
+    data class Delete(override val index: Int) : ElementEdit
+    /** 文字字号（打印点）。size = 0 表示恢复「按墨迹自动」 */
+    data class TextSize(override val index: Int, val size: Int) : ElementEdit
+    /** 条码 ^BY 的 n（模块宽）与 m（条宽比）。n/m = 0 表示恢复自动/默认 */
+    data class BarcodeScale(override val index: Int, val n: Float, val m: Float) : ElementEdit
 }
 
 /**
@@ -159,6 +167,7 @@ fun ResultPane(
     onUseOcr: (Boolean) -> Unit,
     onTemplate: (Int) -> Unit,
     onReanalyze: () -> Unit,
+    onRequad: () -> Unit,
     onReshoot: () -> Unit,
     version: String,
     onCopyZpl: () -> Unit,
@@ -180,6 +189,8 @@ fun ResultPane(
             // 重新识别：拿**同一张照片**重跑整条链（拍照没变、只是识别结果想再要一次）。
             // 与"重拍"的区别是它不碰相机；重跑从原始图开始（见 MainActivity.lastRaw 的说明）。
             TextButton(onClick = onReanalyze, enabled = !busy) { Text("重新识别") }
+            // 调四角：识别结果偏了（四边形标歪/漏边）时回标定页重拖，不用重新拍照
+            TextButton(onClick = onRequad, enabled = !busy) { Text("调四角") }
             TextButton(onClick = onReshoot, enabled = !busy) { Text("重拍") }
         }
         Text(status, style = MaterialTheme.typography.bodySmall)
@@ -265,10 +276,15 @@ fun ResultPane(
         val e = plan.elements[idx]
         EditDialog(
             element = e,
+            labelW = ZplGeometry.dims(plan.template).first,
             onDismiss = { editing = null },
-            onConfirm = { newText, newFormat ->
+            onConfirm = { newText, newFormat, newFs, newN, newM ->
+                // 顺序要紧：先改内容/码制，再改字号与缩放 —— applyEdit 每次都重排，
+                // 反过来的话用户改的字号会被上一步的 copy 覆盖掉（少一个字段就静默丢）。
                 if (newFormat != e.format) onEdit(ElementEdit.Format(idx, newFormat))
                 if (newText != e.text) onEdit(ElementEdit.Text(idx, newText))
+                if (newFs != e.fsOverride) onEdit(ElementEdit.TextSize(idx, newFs))
+                if (newN != e.byN || newM != e.byM) onEdit(ElementEdit.BarcodeScale(idx, newN, newM))
                 editing = null
             },
         )
@@ -318,24 +334,39 @@ private fun PhotoWithBoxes(bitmap: Bitmap, elements: List<LabelElement>, modifie
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditDialog(
     element: LabelElement,
+    labelW: Int,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit,
+    /** text, format, 字号(0=自动), ^BY 的 n(0=自动), m(0=默认) */
+    onConfirm: (String, String, Int, Float, Float) -> Unit,
 ) {
     var text by remember { mutableStateOf(element.text) }
     var format by remember { mutableStateOf(element.format) }
+    // 自动值由 ZplGeometry 算 —— 和生成器同一份公式，弹窗里的「自动 24」就是实际会打出来的字号
+    val autoFs = remember(element) { ZplGeometry.autoFontSize(element, labelW) }
+    val autoN = remember(element) { ZplGeometry.autoModuleWidth(element) }
+    var fs by remember(element) { mutableStateOf(element.fsOverride) }        // 0 = 自动
+    var byN by remember(element) { mutableStateOf(element.byN) }             // 0 = 自动
+    var byM by remember(element) { mutableStateOf(element.byM) }             // 0 = 默认 2.5
     val formats = formatsFor(element.kind)
+    val isText = element.kind == ElementKind.TEXT
+    val isBar1d = element.kind == ElementKind.BARCODE_1D
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑要素") },
+        title = { Text(if (isText) "编辑文字" else if (isBar1d) "编辑条码" else "编辑要素") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (formats.isNotEmpty()) {
                     Text("码制", style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 一维码有 6 种码制，Row 一行放不下（实测 EAN-8 被裁在弹窗外）→ 自动换行
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                         formats.forEach { f ->
                             LabelChip(selected = format == f, onClick = { format = f }, text = f)
                         }
@@ -346,12 +377,110 @@ private fun EditDialog(
                     label = { Text("内容") },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 90.dp),
                 )
+
+                if (isText) {
+                    // 字号：自动值上下加减，2 点一档（203dpi 下 1 点 ≈ 0.125mm）
+                    StepRow(
+                        label = "字号",
+                        value = if (fs > 0) "$fs 点" else "自动 $autoFs 点",
+                        manual = fs > 0,
+                        onMinus = { fs = maxOf(6, (if (fs > 0) fs else autoFs) - 2) },
+                        onPlus = { fs = minOf(120, (if (fs > 0) fs else autoFs) + 2) },
+                        onAuto = { fs = 0 },
+                    )
+                    Text(
+                        "字号越大字越高，超宽时打印机会把字挤着叠印；超宽会被自动压回可印尺寸。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (isBar1d) {
+                    // ^BY n,m：n = 模块宽（点），m = 条宽比。缩放整条条码就靠这两个数
+                    StepRow(
+                        label = "模块宽 ^BY",
+                        value = if (byN > 0) "${fmtHalf(byN.toDouble())} 点" else "自动 ${fmtHalf(autoN)} 点",
+                        manual = byN > 0,
+                        onMinus = { byN = maxOf(1f, (if (byN > 0) byN else autoN.toFloat()) - 0.5f) },
+                        onPlus = { byN = minOf(10f, (if (byN > 0) byN else autoN.toFloat()) + 0.5f) },
+                        onAuto = { byN = 0f },
+                    )
+                    Text("条宽比 m", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(2.0f, 2.5f, 3.0f).forEach { v ->
+                            val cur = if (byM > 0) byM else ZplGeometry.DEFAULT_BY_RATIO.toFloat()
+                            LabelChip(
+                                selected = Math.abs(cur - v) < 0.01f,
+                                onClick = { byM = if (Math.abs(v - ZplGeometry.DEFAULT_BY_RATIO.toFloat()) < 0.01f) 0f else v },
+                                text = fmtHalf(v.toDouble()),
+                            )
+                        }
+                    }
+                    Text(
+                        "n 越大条码越宽；EAN-13 / UPC / ITF 的模块数由码制固定，只有 n 起作用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(text, format) }) { Text("确定") } },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text, format, fs, byN, byM) }) { Text("确定") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
+
+/**
+ * 「− 值 +」加一个「恢复自动」。
+ *
+ * 排成两行而不是一行：`标签 + − + 值 + + + 恢复自动` 塞进一行时，最后那个中文按钮
+ * 会被挤到只剩一个字宽，渲染成竖排的「自／动」（实测截图）。上行放标签与复位入口，
+ * 下行只放步进器，宽度就永远够。
+ */
+@Composable
+private fun StepRow(
+    label: String,
+    value: String,
+    manual: Boolean,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    onAuto: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            if (manual) {
+                TextButton(onClick = onAuto, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                    Text("恢复自动", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = onMinus, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Text("−", style = MaterialTheme.typography.titleMedium)
+            }
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (manual) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = onPlus, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Text("+", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    }
+}
+
+/** 2.5 → "2.5"，3.0 → "3"：ZPL 里 ^BY3,3 和 ^BY3,3.0 都合法，但界面别显示多余小数 */
+private fun fmtHalf(v: Double): String =
+    if (Math.abs(v - Math.round(v)) < 0.01) Math.round(v).toString() else "%.1f".format(v)
 
 /** ZPL 只实现了 ^BC(128)/^B3(39)/^BQ(QR)，码制选项就限定在这三种，不让用户选到打不出的 */
 private fun formatsFor(kind: ElementKind): List<String> = when (kind) {
