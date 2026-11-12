@@ -42,6 +42,7 @@
           249.0
         ]
       ],
+      "symbology": "code39",
       "px": [
         50.0,
         0.0,
@@ -68,5 +69,5 @@
   "dropped_ocr": [],
   "decollided": [],
   "overflow": [],
-  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,194^FT39,256^BCN,194,N,N,N^FDABC123^FS\r\n^XZ\r\n"
+  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,194^FT39,256^B3N,N,194,N,N^FDABC123^FS\r\n^XZ\r\n"
 }

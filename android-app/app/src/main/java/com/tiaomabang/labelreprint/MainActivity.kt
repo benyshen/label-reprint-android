@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
     /** 主力引擎：两个引擎互补（二维码走 DL、一维码走 zxing），见 HybridBarcodeEngine 的说明 */
     private val hybrid by lazy { HybridBarcodeEngine(applicationContext) }
 
-    /** 文字 OCR：PP-OCRv4 on-device。模型加载重，lazy + 首次用到才建。 */
+    /** 文字 OCR：PP-OCRv6 small on-device。模型加载重，lazy + 首次用到才建。 */
     private val ocr by lazy { PaddleOcrEngine(applicationContext, InferenceBackend.CPU) }
 
     private var engineKind by mutableStateOf("hybrid")
@@ -1222,7 +1222,7 @@ class MainActivity : ComponentActivity() {
         return null to "probe 完成：${ps.size} 条实验记录"
     }
 
-    /** `--es ocr 1`：只跑 OCR（不碰条码、不出 ZPL），专门验证 PP-OCRv4 在真机上通不通 */
+    /** `--es ocr 1`：只跑 OCR（不碰条码、不出 ZPL），专门验证 PP-OCR 在真机上通不通 */
     private fun runOcrTest(): Pair<ReprintPlan?, String> {
         val bmp = assetsBitmap("samples/label_sample_1.png") ?: return null to "样图读不到"
         val lines = ocr.lines(bmp)

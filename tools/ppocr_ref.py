@@ -1,16 +1,33 @@
-"""Faithful port of PaddleOCR PP-OCRv4 det/rec postprocess (RapidOCR ONNX weights).
-Reference implementation used to validate the Android/Kotlin port.
+"""Faithful port of PaddleOCR PP-OCR det/rec postprocess.
+
+Model set is switchable so the Android port and this reference always run the SAME weights:
+  PPOCR_MODEL=v6 (default) -> PP-OCRv6_small det/rec + 18708-char unified dict
+  PPOCR_MODEL=v4           -> PP-OCRv4 (the pre-2026-11 baseline, kept for A/B)
+Both APK assets and the v4 A/B set live in the repo: v6 in android-app/app/src/main/assets/models
+(the same files the APK packs), v4 in android-app/models_v4 (kept out of the APK).
 Usage: python ppocr_ref.py <image> [--dump-prefix out]
 """
-import sys, math
+import sys, math, os
 import numpy as np, cv2, onnxruntime as ort
 
-D = "E:/workspace/paddleocr-android-app/assets/models"
-_KEYS = open(f"{D}/ppocr_keys_v1.txt", encoding="utf-8").read().split("\n")
+_TOOLS = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(_TOOLS)
+D = os.path.join(ROOT, "android-app", "app", "src", "main", "assets", "models")
+V4_D = os.path.join(ROOT, "android-app", "models_v4")
+MODEL = os.environ.get("PPOCR_MODEL", "v6").lower()
+# (目录, det, rec, 字典, 类别数=字典+blank+space)
+SETS = {
+    "v6": (D, "ch_PP-OCRv6_det_small_infer.onnx", "ch_PP-OCRv6_rec_small_infer.onnx",
+           "ppocr_v6_dict.txt", 18710),
+    "v4": (V4_D, "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx",
+           "ppocr_keys_v1.txt", 6625),
+}
+MDIR, DET_FILE, REC_FILE, DICT_FILE, NCHARS = SETS[MODEL]
+_KEYS = open(f"{MDIR}/{DICT_FILE}", encoding="utf-8").read().split("\n")
 KEYS = [k for k in _KEYS if k != ""]
 # index 0 = blank, 1..N -> KEYS[i-1], last index -> space
 CHARS = ["blank"] + KEYS + [" "]
-assert len(CHARS) == 6625, len(CHARS)
+assert len(CHARS) == NCHARS, (len(CHARS), NCHARS)
 
 DET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 DET_STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -18,8 +35,8 @@ DET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 def load():
     so = ort.SessionOptions(); so.intra_op_num_threads = 4
-    det = ort.InferenceSession(f"{D}/ch_PP-OCRv4_det_infer.onnx", sess_options=so)
-    rec = ort.InferenceSession(f"{D}/ch_PP-OCRv4_rec_infer.onnx", sess_options=so)
+    det = ort.InferenceSession(f"{MDIR}/{DET_FILE}", sess_options=so)
+    rec = ort.InferenceSession(f"{MDIR}/{REC_FILE}", sess_options=so)
     return det, rec
 
 

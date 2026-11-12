@@ -42,6 +42,7 @@
           75.0
         ]
       ],
+      "symbology": "code128",
       "px": [
         25.0,
         13.0,
@@ -93,6 +94,7 @@
           69.0
         ]
       ],
+      "symbology": "code128",
       "px": [
         313.0,
         16.0,
@@ -140,6 +142,8 @@
         213.9130401611328
       ],
       "kind": "text",
+      "ink_w": 129.0,
+      "ink_h": 28.0,
       "hri": false,
       "dots": [
         296.38999245383525,
@@ -148,7 +152,9 @@
         264.13701837713063
       ],
       "w": 161.05400316642994,
-      "h": 33.30697724313441
+      "h": 33.30697724313441,
+      "ink_w_dots": 156.36363636363637,
+      "ink_h_dots": 33.93939393939394
     }
   ],
   "dropped_ocr": [
@@ -159,5 +165,5 @@
   ],
   "decollided": [],
   "overflow": [],
-  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,75^FT30,96^BCN,75,Y,N,N^FDABC123^FS\r\n^FT379,99^BQN,2,3^FDQA,NGSU^FS\r\n^FT296,274^A0N,43,43^FB172,1,0,L,0^FDNANJING^FS\r\n^XZ\r\n"
+  "zpl": "^XA\r\n^CI28\r\n^PW480\r\n^LL320\r\n^BY3,2.5,75^FT30,96^BCN,75,Y,N,N^FDABC123^FS\r\n^FT379,99^BQN,2,3^FDQA,NGSU^FS\r\n^FT296,293^A0N,50,50^FB172,1,0,L,0^FDNANJING^FS\r\n^XZ\r\n"
 }

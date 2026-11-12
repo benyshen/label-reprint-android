@@ -102,7 +102,9 @@ def main():
     # PC 参考实现：OCR 通过「传 det/rec」打开（build 里 det is not None 才跑文字）
     det = rec = None
     if args.ocr:
-        sys.path.insert(0, "E:/workspace/paddleocr-android-app/tools")
+        # 必须用本工程的参考实现：它按 PPOCR_MODEL 选模型（默认 v6），且模型来自 APK 的
+        # assets/models。以前指向 paddleocr-android-app/tools 的老 ppocr_ref（写死 v4），
+        # 结果就是「PC 跑 v4、设备跑 v6」的假 FAIL。
         import ppocr_ref
         det, rec = ppocr_ref.load()
     for name in SAMPLES:

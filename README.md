@@ -38,7 +38,7 @@ tools/             PC 端 Python 参考实现（一切算法的基线，Kotlin �
   zpl_geometry.py  标签尺寸/字号度量/锚点偏移/码制容量 —— 唯一真源，Kotlin 必须 1:1 镜像
   label_frame.py   照片像素→标签点阵的「基准」：label(找标签四边形并矫正) / full / content
   label_to_zpl.py  主链：解码 → OCR → 元素表 → 映射 → ZPL
-  ppocr_ref.py     PP-OCRv4 det/rec 后处理（与安卓端同款模型，取自 paddleocr-android-app）
+  ppocr_ref.py     PP-OCR det/rec 后处理（PPOCR_MODEL=v6|v4，与安卓端同一批模型）
   validate_zpl.py  机器校验：^XA/^XZ、^FD/^FS、^PW/^LL、坐标越界、条码估算宽度、禁用指令
   render_check.py  用 Labelary 渲染生成结果，做「原图 vs 重打」并排对照
   fidelity.py      定量评估：墨迹 IoU + 逐行带位置偏差（点）
@@ -101,7 +101,7 @@ $PY tools/demo.py --template 1 --frame full
 
 - [x] Android 工程：CameraX 拍照/选图 → 引擎 → 可编辑元素列表 → 照片上叠框 → ZPL 预览/复制/导出
 - [x] `BarcodeEngine` 双实现 + `HybridBarcodeEngine`（二维码走 DL、一维码走 zxing）
-- [x] 文字 OCR：PP-OCRv4（ORT + OpenCV）在端侧跑通
+- [x] 文字 OCR：PP-OCRv6 small（ORT + OpenCV）在端侧跑通（V2.4 从 v4 升级，18708 字字典）
 - [x] 透视校正：`label_frame.detect_label_quad` 的 Kotlin 版（`LabelFrame.kt`，候选面积 ≥92% 判背景）
 - [x] 打印：Zebra Link-OS 蓝牙直出（secure→insecure 降级），真机 TC73 → ZR668 实测通
 - [x] 两端逐字节比对回归（`tools/device_zpl_check.py`，条码-only 3/3；OCR 链路 ±2 点）

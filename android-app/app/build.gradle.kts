@@ -14,8 +14,8 @@ android {
         applicationId = "com.tiaomabang.labelreprint"
         minSdk = 34                  // TC73 = Android 14
         targetSdk = 36
-        versionCode = 23
-        versionName = "2.3"
+        versionCode = 24
+        versionName = "2.4"
         ndk { abiFilters += "arm64-v8a" }
     }
 
@@ -98,9 +98,10 @@ dependencies {
     // 条码/二维码：zxing-cpp 官方 Android 封装（Apache-2.0，自带 4 个 ABI 的 natives，无 GMS 依赖）
     implementation("io.github.zxing-cpp:android:3.1.1")
 
-    // 文字 OCR：PP-OCRv4（det+rec+cls）走 ONNX Runtime；几何后处理（DB 阈值/轮廓/minAreaRect/
+    // 文字 OCR：PP-OCRv6 small（det+rec+cls）走 ONNX Runtime；几何后处理（DB 阈值/轮廓/minAreaRect/
     // unclip/透视裁剪）走 OpenCV —— 与 PC 端 tools/ppocr_ref.py 用的是同一套算法和同一批模型，
     // 端侧才能和参考实现对齐。OpenCV 也用于 label 基准的标签四边形检测。
+    // 模型资产：assets/models（v6 det 9.9MB + rec 21MB + 18708 字字典；v4 三个文件留作 A/B 回退）。
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
     implementation("org.opencv:opencv:4.11.0")
 
