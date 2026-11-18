@@ -73,7 +73,8 @@ private fun LabelSizeCard(onCustomSize: (String, String) -> Unit) {
     ) {
         Text("标签纸尺寸（自定义模板）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Text(
-            "按整张纸的实际毫米数填，默认 76×70。ZPL 画布按 8 点/mm 换算：76mm → ^PW608。",
+            "按整张纸的实际毫米数填，默认 76×70。点阵点数随分辨率换算：" +
+                ZplGeometry.sizeText(),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -92,6 +93,61 @@ private fun LabelSizeCard(onCustomSize: (String, String) -> Unit) {
     }
 }
 
+/**
+ * 打印分辨率卡片。
+ *
+ * 为什么必须有这一项：ZPL 里每个数字都是**点**。同一张 76×70mm 的标签，
+ * 203dpi 是 607×559 点、300 是 898×827、600 是 1795×1654 ——
+ * 按 203 的坐标发给 300 的机器，纸上只会印出 2/3 大的标签（而"打印成功"照样返回）。
+ * 所以分辨率是**打印机属性**，放在这一页而不是识别页。
+ */
+@Composable
+private fun DpiCard(dpi: Int, onDpi: (Int) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(ZebraPalette.SurfaceLow, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("打印分辨率（打印头 DPI）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "203dpi = 8 点/mm、300 = 11.8、600 = 23.6。坐标、字号、条码模块宽、框线粗细都按这个换算。" +
+                "连接打印机时会自动读取打印头 DPI；这里手选后以手选为准。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ZplGeometry.SUPPORTED_DPI.forEach { d ->
+                val sel = d == dpi
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .background(
+                            if (sel) ZebraPalette.Lime else ZebraPalette.CardHigh,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .clickable { onDpi(d) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${d}dpi",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                        color = if (sel) ZebraPalette.OnLime else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+        Text(
+            "当前标签：${ZplGeometry.sizeText()}",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (dpi == 203) ZebraPalette.Muted else ZebraPalette.Lime,
+        )
+    }
+}
+
 @Composable
 fun PrinterScreen(
     ui: PrinterUi,
@@ -102,6 +158,8 @@ fun PrinterScreen(
     autoConnect: Boolean,
     busy: Boolean,
     version: String,
+    dpi: Int = ZplGeometry.DPI_DEFAULT,
+    onDpi: (Int) -> Unit = {},
     onRefresh: () -> Unit,
     onReconnect: () -> Unit,
     onDisconnect: () -> Unit,
@@ -147,6 +205,7 @@ fun PrinterScreen(
             // 纸尺寸是**打印机/耗材**的属性，跟拍照姿势无关，放这一页最顺；
             // 之前盖在取景框上那两块输入框很难点到（用户反馈无法修改），已挪走。
             LabelSizeCard(onCustomSize)
+            DpiCard(dpi = dpi, onDpi = onDpi)
 
             PrinterStatusCard(
                 ui = ui,

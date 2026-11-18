@@ -96,7 +96,9 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
 
     // 条码/二维码：zxing-cpp 官方 Android 封装（Apache-2.0，自带 4 个 ABI 的 natives，无 GMS 依赖）
-    implementation("io.github.zxing-cpp:android:3.1.1")
+    // A/B 实验（临时）：master 快照 3.2.0-SNAPSHOT 的 AAR。官方 AAR 声明 minCompileSdk=37，
+    // 本工程 AGP 8.13.2 最高只支持 compileSdk 36 → 已剥掉 aar-metadata.properties 后放 libs/。
+    implementation(files("libs/zxingcpp-3.2.0-snap.aar"))
 
     // 文字 OCR：PP-OCRv6 small（det+rec+cls）走 ONNX Runtime；几何后处理（DB 阈值/轮廓/minAreaRect/
     // unclip/透视裁剪）走 OpenCV —— 与 PC 端 tools/ppocr_ref.py 用的是同一套算法和同一批模型，

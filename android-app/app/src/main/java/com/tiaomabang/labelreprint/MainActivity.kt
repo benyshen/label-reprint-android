@@ -166,6 +166,9 @@ class MainActivity : ComponentActivity() {
     private var templatePinned by mutableStateOf(false)
     private var cameraReady by mutableStateOf(false)
 
+    /** 当前打印分辨率（Compose 可观察）。真源仍是 [ZplGeometry.dpi]，这里只是给它挂个状态。 */
+    private var dpiNow by mutableStateOf(ZplGeometry.dpi)
+
     // 打印（Zebra Link-OS：经典蓝牙 / 低功耗蓝牙 / 网口）
     // 必须 lazy：Activity 的字段初始化发生在 <init> 阶段，那时 Context 还没 attach，
     // `applicationContext` 是 null（实测启动即崩：Context.getApplicationContext() on a null object）。
@@ -267,6 +270,17 @@ class MainActivity : ComponentActivity() {
             val chh = sp.getFloat("customH", 70f).toDouble()
             if (cw > 10 && chh > 10) ZplGeometry.setCustomSize(cw, chh)
         }
+        // 分辨率必须在读回自定义尺寸**之后**再切：setDpi 会把模板表的 dpi 一起改，
+        // 顺序反了的话 setCustomSize 写的是旧 dpi。
+        ZplGeometry.setDpi(printerPrefs.dpi)
+        // 调试口 `--es dpi 300`：不接打印机也能验 300/600 的版面（与 PC 端 --dpi 逐字节比对）
+        intent?.getStringExtra("dpi")?.toIntOrNull()?.let {
+            ZplGeometry.setDpi(it)
+            printerPrefs.dpi = ZplGeometry.dpi
+            printerPrefs.dpiPinned = true
+            Log.i(TAG, "DPI >>> 注入 ${ZplGeometry.dpi}（debug hook）")
+        }
+        dpiNow = ZplGeometry.dpi
         injected = extrasKey(intent)
         engineKind = engineKindOf(intent)
         readPrintExtras(intent)
@@ -423,6 +437,8 @@ class MainActivity : ComponentActivity() {
                         onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
                         onTestPrint = ::printTestPage,
                         onCalibrate = ::calibratePrinter,
+                        dpi = dpiNow,
+                        onDpi = { d -> applyDpi(d, "打印机设置页手选") },
                         onCustomSize = { w, h ->
                             val wv = w.toDoubleOrNull() ?: 0.0
                             val hv = h.toDoubleOrNull() ?: 0.0
@@ -573,6 +589,21 @@ class MainActivity : ComponentActivity() {
                     )
                     printerPrefs.remember(spec, printerUi.name)
                     Log.i(TAG, "PRINT >>> 已连接 ${r.info}（$spec，${printer.transport().label}）状态=$st")
+                    // 按打印头自报的分辨率校准。三条规矩：
+                    // ① 读不到（老固件/Link-OS 不透传 SGD）就保持手选档位，绝不猜；
+                    // ② 用户手选过（dpiPinned）以他为准，只在日志/状态里提示差异；
+                    // ③ 其余情况以打印机为准 —— 300 的机器收到 203 的坐标，整张只印出 2/3 大。
+                    val headDpi = printer.resolution()
+                    if (headDpi != null) {
+                        if (headDpi != ZplGeometry.dpi && !printerPrefs.dpiPinned) {
+                            applyDpi(headDpi, why = "打印机自报 ${headDpi}dpi，已自动切换")
+                        } else if (headDpi != ZplGeometry.dpi) {
+                            Log.w(TAG, "DPI >>> 打印机是 ${headDpi}dpi，但界面手选了 ${ZplGeometry.dpi}dpi（以手选为准）")
+                            printerState = "已连接 ${r.info} · ${headDpi}dpi 打印头 / 当前按 ${ZplGeometry.dpi}dpi 排版"
+                        } else {
+                            Log.i(TAG, "DPI >>> 与打印机一致（${headDpi}dpi）")
+                        }
+                    }
                 }
                 is GatewayResult.Err -> {
                     printerState = "连接失败：${r.reason}"
@@ -581,6 +612,31 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 切打印分辨率：改几何真源 + 落盘 + 把当前结果按新点阵重排一遍。
+     *
+     * 必须重排：plan 里的 dots 是**旧 dpi 空间**的坐标，只改 ZplGeometry 不重排，
+     * 界面预览和已生成的 ZPL 都还是 203 那一套（用户会看到"改了没反应"）。
+     * 重排走 LabelPipeline.remap（从 px 重算），remap 幂等，所以来回切 203↔300 不会累积误差。
+     */
+    private fun applyDpi(newDpi: Int, why: String, pin: Boolean = true) {
+        val v = ZplGeometry.setDpi(newDpi)
+        if (pin) printerPrefs.dpiPinned = true
+        printerPrefs.dpi = v
+        dpiNow = v
+        val p = plan
+        if (p != null) {
+            val next = LabelPipeline.remap(p, p.elements, p.template)
+            plan = next
+            Log.i(TAG, "DPI >>> ${v}dpi 重排：label=${ZplGeometry.sizeText(p.template)} " +
+                "elements=${next.elements.size} errors=${next.zplErrors.size}")
+            Log.i(TAG, "ZPL >>> ${v}dpi 重排\n${next.zpl.replace("\r\n", "\n")}")
+        } else {
+            Log.i(TAG, "DPI >>> ${v}dpi label=${ZplGeometry.sizeText()}")
+        }
+        Log.i(TAG, "DPI >>> $v（$why）")
     }
 
     /** 断开：不删记住的目标，下次点「连接」还连它 */
@@ -642,16 +698,21 @@ class MainActivity : ComponentActivity() {
 
     /** 测试页：一张最小标签，验证"链通 + 能出纸"。换机器、换纸、换现场都先打这张。 */
     private fun printTestPage() {
+        // 测试页也要跟着分辨率走：写死 ^PW480^LL320 在 300dpi 的机器上只占 60×34mm 一角，
+        // 会让人误以为"纸尺寸设错了"。坐标统一按 203dpi 的原始点数折算成毫米再换算，
+        // 于是 203/300/600 打出来的物理版面完全一样。
+        val (w, h) = ZplGeometry.dims(template)
+        val d = { v203: Int -> ZplGeometry.mm2dots(v203 / 8.0) }   // 203dpi = 8 点/mm
         val zpl = buildString {
             append("^XA")
-            append("^PW480^LL320")
-            append("^FO20,20^A0N,34,34^FD测试页 TEST PAGE^FS")
-            append("^FO20,70^A0N,22,22^FD${appVersion} / ${printer.transport().short.ifBlank { "无链路" }}^FS")
-            append("^FO20,110^A0N,22,22^FD${printerUi.target}^FS")
-            append("^FO20,150^BY2^BCN,90,Y,N,N^FD${printerUi.target.replace(":", "")}^FS")
+            append("^PW$w^LL$h")
+            append("^FO${d(20)},${d(20)}^A0N,${d(34)},${d(34)}^FD测试页 TEST PAGE^FS")
+            append("^FO${d(20)},${d(70)}^A0N,${d(22)},${d(22)}^FD${appVersion} / ${printer.transport().short.ifBlank { "无链路" }} ${ZplGeometry.dpi}dpi^FS")
+            append("^FO${d(20)},${d(110)}^A0N,${d(22)},${d(22)}^FD${printerUi.target}^FS")
+            append("^FO${d(20)},${d(150)}^BY${ZplGeometry.fmtNum(ZplGeometry.MIN_MODULE_DOTS * 1.5)}^BCN,${d(90)},Y,N,N^FD${printerUi.target.replace(":", "")}^FS")
             append("^XZ")
         }
-        Log.i(TAG, "PRINT >>> 打印测试页（${printer.transport().label}）")
+        Log.i(TAG, "PRINT >>> 打印测试页（${printer.transport().label}，${ZplGeometry.dpi}dpi，${w}x$h 点）")
         printZpl(zpl)
     }
 

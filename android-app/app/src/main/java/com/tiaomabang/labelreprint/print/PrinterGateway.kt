@@ -304,6 +304,31 @@ class ZebraGateway(
 
     override suspend fun disconnect() = withContext(sdk) { lock.withLock { closeInternal() } }
 
+    /**
+     * 读打印头分辨率（203 / 300 / 600）。
+     *
+     * SGD 键 `head.resolution.in_dpi` 是 Zebra 官方给的"查打印头 DPI"命令（Support 000026368）。
+     * 老固件没有这个键时才退到 `ezpl.resolution`。读不到返回 null —— 调用方保持用户手选的档位，
+     * 绝不猜：猜错的代价是整批标签按错误点阵印出来（300 的机器收到 203 的坐标，只印出 2/3 大）。
+     */
+    suspend fun resolution(): Int? = withContext(sdk) {
+        lock.withLock {
+            val c = conn ?: return@withLock null
+            val keys = listOf("head.resolution.in_dpi", "ezpl.resolution")
+            for (k in keys) {
+                val v = runCatching { SGD.GET(k, c) }.getOrNull()?.trim()?.trim('"')
+                val d = v?.toIntOrNull() ?: continue
+                if (d in listOf(203, 300, 600)) {
+                    log("resolution: $k = $d dpi")
+                    return@withLock d
+                }
+            }
+            log("resolution: 读不到（备用键全部无效），沿用设置里手选的档位")
+            null
+        }
+    }
+
+
     /** 退出时调用：复用同一个 HandlerThread，别忘了 quit */
     fun shutdown() = runCatching { thread.quitSafely() }
 

@@ -24,11 +24,13 @@ def adb(*args):
     return subprocess.run([ADB, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def device_zpls(template, frame, wait=120, ocr=False):
+def device_zpls(template, frame, wait=120, ocr=False, dpi=None):
     adb("shell", "am", "force-stop", PKG)
     adb("logcat", "-c")
     # 值里有空格时整条 am start 要作为一个字符串交给设备 shell，否则 extra 只收到第一个词
     extra = "--es all 1 --es ocr 1" if ocr else "--es all 1"
+    if dpi:
+        extra += f" --es dpi {dpi}"
     adb("shell", f"am start -n {PKG}/.MainActivity {extra}")
     # 必须轮询：混合引擎冷启要解压/初始化 DL 模型（实测 ready 9.4s），OCR 还要再建 3 个 ONNX
     # session（首次 ~40s）；固定 sleep 会在"还没有任何 ZPL"时就抓日志，报成"设备端没有输出"。
@@ -90,9 +92,12 @@ def main():
     ap.add_argument("--frame", default="full")
     ap.add_argument("--ocr", action="store_true", help="两端都开 OCR（含文字要素），验证文字链路")
     ap.add_argument("--tol", type=int, default=2, help="--ocr 模式下允许的点数差")
+    ap.add_argument("--dpi", type=int, default=G.DPI, choices=[203, 300, 600],
+                    help="两端统一按这个分辨率排版（设备端用 --es dpi 注入，不依赖接的是哪台机器）")
     args = ap.parse_args()
+    G.set_dpi(args.dpi)
 
-    dev, log = device_zpls(args.template, args.frame, ocr=args.ocr)
+    dev, log = device_zpls(args.template, args.frame, ocr=args.ocr, dpi=args.dpi)
     if not dev:
         print("!! no ZPL in logcat. raw log tail:")
         print("\n".join(log.splitlines()[-15:]))

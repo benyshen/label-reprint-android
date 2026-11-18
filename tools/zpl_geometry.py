@@ -13,20 +13,78 @@ import math
 
 MM_PER_INCH = 25.4
 
+# --- 打印分辨率：所有"点"都是它的函数 -------------------------------------
+# 现场同时有 203 / 300 / 600dpi 的 Zebra 机（ZR668=203、ZT231/ZD421=203 或 300、
+# ZT610/ZE500=600）。ZPL 坐标/字号/条码模块宽全以**点**为单位，换个 dpi 机器不改换算，
+# 整张标签就会缩成 2/3 或 1/3 大 —— 所以物理量一律用 mm 声明，出点阵时才乘 dpi。
+DPI = 203
+
+#: 所有"点"常量背后的物理尺寸（mm）。改这里等于改纸面实际留白/线宽。
+MARGIN_MM = 1.5            # 四边留白（203dpi → 12 点）
+TOP_OFFSET_MM = 0.75       # 整体下移（→ 6 点）
+GUARD_MM = 0.75            # 底部保护带（→ 6 点）
+MIN_TEXT_BARCODE_GAP_MM = 0.75   # 文字与条码净空（→ 6 点）
+MIN_MODULE_MM = 0.25       # 一维码模块宽下限（→ 2 点；再细就扫不出）
+TEXT_BASELINE_FIX_MM = 1.5 # 文字基线校正（→ 12 点）
+BOX_THICKNESS_MM = 0.63    # 框线厚度（→ 5 点）
+MIN_FONT_MM = 1.0          # 最小字号（→ 8 点）
+DECOLLIDE_LIMIT_MM = 5.0   # 文字避让条码的最大下移量（→ 40 点）
+LINE_MERGE_MM = 0.75       # 同一根框线的合并容差（→ 6 点）
+QR_MIN_MODULE_MM = 0.25    # QR 放大倍数下限（每模块，→ mag 2）
+QR_MAX_MODULE_MM = 1.25    # QR 放大倍数上限（每模块，→ mag 10）
+
 # --- templates: the only place label sizes live -----------------------------
 TEMPLATES = {
-    1: {"name": "模板1", "w_mm": 60.0, "h_mm": 40.0, "dpi": 203},
-    2: {"name": "模板2", "w_mm": 76.0, "h_mm": 70.0, "dpi": 203},   # 整张纸 76x70mm（实测）
-    3: {"name": "模板3", "w_mm": 70.0, "h_mm": 100.0, "dpi": 203},
+    1: {"name": "模板1", "w_mm": 60.0, "h_mm": 40.0, "dpi": DPI},
+    2: {"name": "模板2", "w_mm": 76.0, "h_mm": 70.0, "dpi": DPI},   # 整张纸 76x70mm（实测）
+    3: {"name": "模板3", "w_mm": 70.0, "h_mm": 100.0, "dpi": DPI},
 }
 DEFAULT_TEMPLATE = 1
 
-#: 一维码模块宽（点）下限 = 2。实测 ^BY1（1 点 = 0.125mm @203dpi）的 Code128 会印糊，
+
+def set_dpi(dpi):
+    """切换打印分辨率（203/300/600），并把所有 mm 常量重算成点。
+
+    为什么用模块级变量而不是给每个函数加参数：调用点有二十几处（builder、
+    pipeline、validator），逐个传 dpi 必漏；而漏一处就是那张标签的留白/线宽错。
+    调用方一律写 `G.MARGIN`（属性查找发生在调用时），set_dpi 之后自动是新值。
+    """
+    global DPI, MIN_MODULE_DOTS, MIN_TEXT_BARCODE_GAP, QR_TEXT_GAP, MARGIN, TOP_OFFSET, GUARD
+    global TEXT_BASELINE_FIX, DECOLLIDE_STEP_LIMIT, BOX_THICKNESS_DOTS, MIN_FONT_DOTS
+    global LINE_MERGE_DOTS, QR_MIN_MAG, QR_MAX_MAG
+    d = int(dpi)
+    if d not in (203, 300, 600):
+        d = 203
+    DPI = d
+    for t in TEMPLATES.values():
+        t["dpi"] = d
+    MIN_MODULE_DOTS = float(mm2dots(MIN_MODULE_MM, d))
+    MIN_TEXT_BARCODE_GAP = mm2dots(MIN_TEXT_BARCODE_GAP_MM, d)
+    QR_TEXT_GAP = MIN_TEXT_BARCODE_GAP + mm2dots(QR_EXTRA_GAP_MM, d)
+    MARGIN = mm2dots(MARGIN_MM, d)
+    TOP_OFFSET = mm2dots(TOP_OFFSET_MM, d)
+    GUARD = mm2dots(GUARD_MM, d)
+    TEXT_BASELINE_FIX = mm2dots(TEXT_BASELINE_FIX_MM, d)
+    DECOLLIDE_STEP_LIMIT = mm2dots(DECOLLIDE_LIMIT_MM, d)
+    BOX_THICKNESS_DOTS = mm2dots(BOX_THICKNESS_MM, d)
+    MIN_FONT_DOTS = mm2dots(MIN_FONT_MM, d)
+    LINE_MERGE_DOTS = float(mm2dots(LINE_MERGE_MM, d))
+    QR_MIN_MAG = max(2, mm2dots(QR_MIN_MODULE_MM, d))
+    QR_MAX_MAG = max(QR_MIN_MAG + 1, mm2dots(QR_MAX_MODULE_MM, d))
+    return d
+
+
+def current_dpi():
+    return DPI
+
+
+#: 一维码模块宽的**默认值**（点，203dpi）。真值由 set_dpi() 按 MIN_MODULE_MM 重算，
+#: 这里只是 import 时就存在的占位。实测 ^BY1（1 点 = 0.125mm @203dpi）的 Code128 会印糊，
 #: 扫描器测不准条宽就退化判成 Code 39 —— 我们的 ZPL 一直是 ^BC，所以这是印不出来导致的。
 MIN_MODULE_DOTS = 2.0
 
-#: 文字与条码的最小净空（点）。实测：条码下方的人眼可读串离条码只有 3~4 点（0.4mm），
-#: 映射到点阵后加上"下边缘锚定"就会贴到条上（用户报"重叠"）。
+#: 文字与条码的最小净空（默认 203dpi 值，真值由 set_dpi 重算）。实测：条码下方的人眼可读串
+#: 离条码只有 3~4 点（0.4mm），映射到点阵后加上"下边缘锚定"就会贴到条上（用户报"重叠"）。
 MIN_TEXT_BARCODE_GAP = 6
 #: 二维码（QR）额外净空（mm）：QR 的 quiet zone 只有自身 4 个模块，印出来再被下方文字蹭一下
 #: 就锁不住定位图。一维码的 HRI 反而该贴条，所以只给二维码加。
@@ -55,8 +113,13 @@ def round_half(v):
     return int(v + 0.5) if v >= 0 else -int(-v + 0.5)
 
 
-def mm2dots(mm, dpi=203):
-    return round_half(mm * dpi / MM_PER_INCH)
+def mm2dots(mm, dpi=None):
+    """mm -> dots. dpi 省略时用当前 DPI（模块级，由 set_dpi 维护）。
+
+    别在这里写 `dpi=203` 这种字面默认值：那样所有"按 mm 算点"的常量都会永远按 203 算，
+    300dpi 的机器上留白/净空全错（实测：留白仍是 12 点而不是 18 点）。
+    """
+    return round_half(mm * (DPI if dpi is None else dpi) / MM_PER_INCH)
 
 
 #: 二维码与下方要素的净空（点）= 通用净空 + 1mm（203dpi → 14 点 ≈ 1.75mm）
@@ -68,9 +131,18 @@ def dims(template=DEFAULT_TEMPLATE):
     return mm2dots(t["w_mm"], t["dpi"]), mm2dots(t["h_mm"], t["dpi"])
 
 
-MARGIN = 12          # dots kept clear on every side
+MARGIN = 12          # dots kept clear on every side   (= MARGIN_MM @当前 dpi)
 TOP_OFFSET = 6       # dots pushed down so content never sits on the label edge
 GUARD = 6            # dots of vertical guard for the overflow check
+BOX_THICKNESS_DOTS = 5
+MIN_FONT_DOTS = 8
+LINE_MERGE_DOTS = 6.0
+QR_MIN_MAG = 2
+QR_MAX_MAG = 10
+
+# 用 mm 常量把上面这些点值重算一遍（203 下与历史值逐字节相同），
+# 之后只要调 set_dpi(300/600) 就全部跟着变。
+set_dpi(DPI)
 
 # --- text metrics (measured against the real renderer, see tools/calib_text.py) ---
 # ^A0N,size,size -> printed cap height = 0.775 * size   (20/40/80/120 dots all fit this)
@@ -116,7 +188,7 @@ def font_size_for(box_w, box_h, text):
     fs_h = box_h / cap
     fs_w = box_w / max(1e-6, text_width(text, 1.0))
     # 实测整版字号统一小一号（12~15%）：双约束取 min 后偏保守，统一放大 1.15
-    return max(8, int(round(min(fs_h, fs_w) * FONT_GAIN)))
+    return max(MIN_FONT_DOTS, int(round(min(fs_h, fs_w) * FONT_GAIN)))
 
 
 # --- anchor offsets ---------------------------------------------------------
@@ -134,7 +206,7 @@ def anchor_dy(kind, **kw):
 
 
 # --- symbology capacities ---------------------------------------------------
-TEXT_BASELINE_FIX = 12   # 文字基线校正：1.5mm @203dpi（8 点/mm），真机实测偏高
+TEXT_BASELINE_FIX = 12   # 文字基线校正：1.5mm，真机实测偏高（set_dpi 会按 TEXT_BASELINE_FIX_MM 重算）
 
 
 def code128_modules(n_chars, digits_only=False):

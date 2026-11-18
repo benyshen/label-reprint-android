@@ -78,7 +78,9 @@ object ZplBuilder {
                     // 厚度钳到 3~5 点（0.38~0.63mm）：细线（1~2 点）打出来发虚，
                     // 下一次拍照更难检出 —— 现场标签的框线本来也是这个量级。
                     // 上限 5：再粗 ^GB 会把 3 点的笔画糊成色块。
-                    val th = 5   // 统一 5 点（0.63mm）：实测 3 点打出来仍发虚、下次拍照难检出
+                    // 厚度按物理量取（0.63mm）：203dpi → 5 点、300 → 7 点、600 → 15 点。
+                    // 细线（1~2 点）打出来发虚，下一次拍照更难检出；再粗 ^GB 会把笔画糊成色块。
+                    val th = ZplGeometry.BOX_THICKNESS_DOTS
                     field = "^FO$x,$top^GB$bw,$bh,${th}^FS"
                     bottom = top + bh
                 }
@@ -97,7 +99,7 @@ object ZplBuilder {
                     // 硬兜底：字号超过字段宽时打印机**不是截断，而是把字符挤着叠印**（纸上就是
                     // 用户报的"文字重合"）。实测 31 字符中文行在 416 点字段里用 26 号字需要 858 点。
                     // 宁可小一号，也绝不超宽。
-                    while (fs > 8 && ZplGeometry.textWidth(e.text, fs) > maxW) fs -= 1
+                    while (fs > ZplGeometry.MIN_FONT_DOTS && ZplGeometry.textWidth(e.text, fs) > maxW) fs -= 1
                     if (userFs && fs != wantFs) {
                         warnings += "字号 $wantFs 会让「${e.text}」超宽（${maxW} 点字段），已按 $fs 点输出"
                     }
@@ -150,12 +152,12 @@ object ZplBuilder {
                 if (horiz) {
                     val cy = (b.dots[1] + b.dots[3]) / 2f
                     val ky = (k.dots[1] + k.dots[3]) / 2f
-                    Math.abs(cy - ky) <= maxOf(6f, kh) &&
+                    Math.abs(cy - ky) <= maxOf(ZplGeometry.LINE_MERGE_DOTS, kh) &&
                         minOf(b.dots[2], k.dots[2]) - maxOf(b.dots[0], k.dots[0]) >= 0.5f * minOf(bw, kw)
                 } else {
                     val cx = (b.dots[0] + b.dots[2]) / 2f
                     val kx = (k.dots[0] + k.dots[2]) / 2f
-                    Math.abs(cx - kx) <= maxOf(6f, kw) &&
+                    Math.abs(cx - kx) <= maxOf(ZplGeometry.LINE_MERGE_DOTS, kw) &&
                         minOf(b.dots[3], k.dots[3]) - maxOf(b.dots[1], k.dots[1]) >= 0.5f * minOf(bh, kh)
                 }
             }

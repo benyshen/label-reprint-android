@@ -571,8 +571,8 @@ def choose_barcode_params(e, template, scale):
         derived = e["w"] / modules
         # 低于可印下限不能照抄：实测 ^BY1（1 点 = 0.125mm）的 Code128 印成一团糊，
         # 扫描器测不准条宽就退化判成 Code 39（用户实际遇到的现象）。见 zpl_geometry.MIN_MODULE_DOTS。
-        module_w = max(G.MIN_MODULE_DOTS, int(round(min(derived, 10.0) * 2)) / 2.0)
-        bar_h = int(round(e["h"]))
+        module_w = max(G.MIN_MODULE_DOTS, G.round_half(min(derived, 10.0) * 2) / 2.0)
+        bar_h = G.round_half(e["h"])
         phys = W - G.GUARD - e["dots"][0]          # 物理可打印宽度
         notes = []
         if derived < G.MIN_MODULE_DOTS:
@@ -591,8 +591,8 @@ def choose_barcode_params(e, template, scale):
                  est_width=modules * module_w)
     else:
         modules = G.qr_modules_for_text(text)
-        mag = int(np.clip(round(e["w"] / modules), 2, 10))
-        while mag > 2 and modules * mag > usable_w:
+        mag = int(np.clip(G.round_half(e["w"] / modules), G.QR_MIN_MAG, G.QR_MAX_MAG))
+        while mag > G.QR_MIN_MAG and modules * mag > usable_w:
             mag -= 1
         e.update(magnification=mag, modules=modules, black_h=modules * mag)
     return e
@@ -814,7 +814,11 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-ocr", action="store_true", help="只跑条码（用于和安卓端 Stage A 逐字节比对）")
+    ap.add_argument("--dpi", type=int, default=G.DPI, choices=[203, 300, 600],
+                    help="打印分辨率（203=8点/mm、300、600）。换机型时整张标签的点阵尺寸/字号/模块宽都变")
     args = ap.parse_args()
+
+    G.set_dpi(args.dpi)
 
     if args.template == "auto":
         # 长宽比必须来自**标签**（子图），不是照片：照片比例里混进了背景

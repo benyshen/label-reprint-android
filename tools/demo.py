@@ -15,7 +15,9 @@ def main():
     ap.add_argument("--dir", default=os.path.join(ROOT, "samples"))
     ap.add_argument("--template", type=int, default=G.DEFAULT_TEMPLATE)
     ap.add_argument("--frame", default="full", choices=["auto", "label", "full", "content"])
+    ap.add_argument("--dpi", type=int, default=G.DPI, choices=[203, 300, 600])
     args = ap.parse_args()
+    G.set_dpi(args.dpi)
 
     sys.path.insert(0, "E:/workspace/paddleocr-android-app/tools")
     import ppocr_ref

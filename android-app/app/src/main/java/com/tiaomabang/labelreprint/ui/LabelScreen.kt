@@ -379,13 +379,14 @@ private fun EditDialog(
                 )
 
                 if (isText) {
-                    // 字号：自动值上下加减，2 点一档（203dpi 下 1 点 ≈ 0.125mm）
+                    // 字号：自动值上下加减，一档 = 0.25mm（203dpi 下 2 点、300 下 3 点、600 下 6 点）
+                    val step = maxOf(1, ZplGeometry.mm2dots(0.25))
                     StepRow(
                         label = "字号",
                         value = if (fs > 0) "$fs 点" else "自动 $autoFs 点",
                         manual = fs > 0,
-                        onMinus = { fs = maxOf(6, (if (fs > 0) fs else autoFs) - 2) },
-                        onPlus = { fs = minOf(120, (if (fs > 0) fs else autoFs) + 2) },
+                        onMinus = { fs = maxOf(6, (if (fs > 0) fs else autoFs) - step) },
+                        onPlus = { fs = minOf(240, (if (fs > 0) fs else autoFs) + step) },
                         onAuto = { fs = 0 },
                     )
                     Text(

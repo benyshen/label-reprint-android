@@ -13,6 +13,23 @@ object ZplGeometry {
 
     const val MM_PER_INCH = 25.4
 
+    /**
+     * 当前打印分辨率。ZPL 的坐标/字号/条码模块宽全以**点**为单位 ——
+     * 203dpi 的 1 点 = 0.125mm，300dpi 是 0.0847mm，600dpi 是 0.0423mm。
+     * 同一张 76×70mm 的标签，203 是 607×559 点、300 是 898×827、600 是 1795×1654；
+     * 换算不跟着 dpi 走，整张标签在 300 的机器上只会印出 2/3 大。
+     *
+     * 所以：**物理量一律用 mm 声明**，只在出点阵时才乘 dpi。
+     */
+    var dpi: Int = DPI_DEFAULT
+        private set
+
+    /** 默认分辨率（老现场全是 203dpi 的机器） */
+    const val DPI_DEFAULT = 203
+
+    /** 支持的三档分辨率（Zebra 现场最常见的三种打印头） */
+    val SUPPORTED_DPI = listOf(203, 300, 600)
+
     data class Template(val id: Int, val label: String, val wMm: Double, val hMm: Double, val dpi: Int)
 
     val TEMPLATES: Map<Int, Template> = linkedMapOf(
@@ -26,6 +43,65 @@ object ZplGeometry {
     /** 自定义模板号 */
     const val CUSTOM_TEMPLATE = 3
 
+    // ------------------------------------------------------------------
+    // 所有"点"常量的物理真值（mm）。改这里等于改纸面实际留白/线宽，
+    // 两侧（pc/kotlin）必须同值；点值由下面那几个 val 按当前 dpi 算出。
+    // ------------------------------------------------------------------
+    const val MARGIN_MM = 1.5            // 四边留白（203dpi → 12 点）
+    const val TOP_OFFSET_MM = 0.75       // 整体下移（→ 6 点）
+    const val GUARD_MM = 0.75            // 底部保护带（→ 6 点）
+    const val MIN_TEXT_BARCODE_GAP_MM = 0.75  // 文字与条码净空（→ 6 点）
+    const val MIN_MODULE_MM = 0.25       // 一维码模块宽下限（→ 2 点）
+    const val TEXT_BASELINE_FIX_MM = 1.5 // 文字基线校正（→ 12 点）
+    const val BOX_THICKNESS_MM = 0.63    // 框线厚度（→ 5 点）
+    const val MIN_FONT_MM = 1.0          // 最小字号（→ 8 点）
+    const val DECOLLIDE_LIMIT_MM = 5.0   // 文字避让条码的最大下移量（→ 40 点）
+    const val LINE_MERGE_MM = 0.75       // 同一根框线的合并容差（→ 6 点）
+    const val QR_MIN_MODULE_MM = 0.25    // QR 每模块下限（→ mag 2）
+    const val QR_MAX_MODULE_MM = 1.25    // QR 每模块上限（→ mag 10）
+
+    /** 四边留白（点） */
+    val MARGIN: Int get() = mm2dots(MARGIN_MM)
+    /** 整体下移（点） */
+    val TOP_OFFSET: Int get() = mm2dots(TOP_OFFSET_MM)
+    /** 底部保护带（点） */
+    val GUARD: Int get() = mm2dots(GUARD_MM)
+    /** 文字与条码净空（点） */
+    val MIN_TEXT_BARCODE_GAP: Int get() = mm2dots(MIN_TEXT_BARCODE_GAP_MM)
+    /** 一维码模块宽下限（点） */
+    val MIN_MODULE_DOTS: Double get() = mm2dots(MIN_MODULE_MM).toDouble()
+    /** 最小字号（点） */
+    val MIN_FONT_DOTS: Int get() = mm2dots(MIN_FONT_MM)
+    /** 框线厚度（点） */
+    val BOX_THICKNESS_DOTS: Int get() = mm2dots(BOX_THICKNESS_MM)
+    /** 同一根框线的合并容差（点） */
+    val LINE_MERGE_DOTS: Float get() = mm2dots(LINE_MERGE_MM).toFloat()
+    /** QR 放大倍数范围（每模块的点数） */
+    val QR_MIN_MAG: Int get() = maxOf(2, mm2dots(QR_MIN_MODULE_MM))
+    val QR_MAX_MAG: Int get() = maxOf(QR_MIN_MAG + 1, mm2dots(QR_MAX_MODULE_MM))
+
+    /**
+     * 切换打印分辨率。所有模板的 dpi 一起改，[dims] / 留白 / 字号 / 模块宽随之变化。
+     */
+    fun setDpi(value: Int): Int {
+        val v = if (value in SUPPORTED_DPI) value else 203
+        dpi = v
+        val map = TEMPLATES as MutableMap
+        for (id in map.keys.toList()) {
+            val t = map.getValue(id)
+            if (t.dpi != v) map[id] = t.copy(dpi = v)
+        }
+        return v
+    }
+
+    /** mm 标签纸尺寸（供界面显示"203dpi → 607×559 点"） */
+    fun sizeText(template: Int = DEFAULT_TEMPLATE): String {
+        val t = TEMPLATES[template] ?: TEMPLATES.getValue(DEFAULT_TEMPLATE)
+        val (w, h) = dims(template)
+        return "${fmtNum(t.wMm)}×${fmtNum(t.hMm)}mm → $w×$h 点 @${t.dpi}dpi"
+    }
+
+
     /**
      * 设置「自定义」模板的标签纸尺寸（mm）。
      *
@@ -34,7 +110,7 @@ object ZplGeometry {
      */
     fun setCustomSize(wMm: Double, hMm: Double) {
         if (!(wMm > 10.0 && wMm < 300.0 && hMm > 10.0 && hMm < 300.0)) return
-        (TEMPLATES as MutableMap)[CUSTOM_TEMPLATE] = Template(CUSTOM_TEMPLATE, "自定义", wMm, hMm, 203)
+        (TEMPLATES as MutableMap)[CUSTOM_TEMPLATE] = Template(CUSTOM_TEMPLATE, "自定义", wMm, hMm, dpi)
     }
 
     fun customSize(): Pair<Double, Double> {
@@ -72,20 +148,12 @@ object ZplGeometry {
     }
 
     /**
-     * 一维码模块宽（点）下限 = 2。
-     *
-     * 实测（203dpi，药品追溯码标签）：`^BY1`（1 点 = 0.125mm）时 Code128 的条被印成一团糊，
-     * **扫描器把 Code128 判成了 Code 39** —— 条宽测不准时解码器会退化到别的码制。
-     * 我们的 ZPL 一直是 `^BC`（日志里 `^B3` 出现 0 次），所以"变 39 码"是印不出来导致的，
-     * 不是编码错了。宁可把条码打得比原图宽，也不能低于可印下限。
+     * 一维码模块宽（点）下限见 [MIN_MODULE_MM]。实测（203dpi，药品追溯码标签）：`^BY1`
+     * （1 点 = 0.125mm）时 Code128 的条被印成一团糊，**扫描器把 Code128 判成了 Code 39** ——
+     * 条宽测不准时解码器会退化到别的码制。我们的 ZPL 一直是 `^BC`（日志里 `^B3` 出现 0 次），
+     * 所以"变 39 码"是印不出来导致的，不是编码错了。
+     * 宁可把条码打得比原图宽，也不能低于可印下限。
      */
-    const val MIN_MODULE_DOTS = 2.0
-
-    /**
-     * 文字与条码之间的最小净空（点）。实测来源：条码下方的人眼可读串被 OCR 当独立文本要素时，
-     * 原图上就只差 3~4 点（0.4mm），映射到点阵后 ^FT 一下就把文字贴到条上（用户报"重叠"）。
-     */
-    const val MIN_TEXT_BARCODE_GAP = 6
 
     /**
      * QR（二维）码与**下方**要素的净空 = 通用净空 + 1mm（203dpi 下 1mm ≈ 8 点 → 合计 14 点 ≈ 1.75mm）。
@@ -99,13 +167,8 @@ object ZplGeometry {
     /** 二维码额外净空（毫米）。单独抽出来，改数值不用碰逻辑。 */
     const val QR_EXTRA_GAP_MM = 1.0
 
-    /** 文字行贴着条码时向下推，直到留出净空（不改横向位置，避免破坏与其它要素的相对关系） */
-    const val DECOLLIDE_STEP_LIMIT = 40
-
-
-    const val MARGIN = 12        // 四边留白（点）
-    const val TOP_OFFSET = 6     // 整体下移，避免贴纸边
-    const val GUARD = 6          // 底部保护带
+    /** 文字行贴着条码时向下推，直到留出净空（不改横向位置，避免破坏与其它要素的相对关系）。点值见 [DECOLLIDE_LIMIT_MM] */
+    val DECOLLIDE_STEP_LIMIT: Int get() = mm2dots(DECOLLIDE_LIMIT_MM)
 
     /** 模板纸面的长宽比（宽/高）。取景框、以及"没检出标签时按取景框裁剪"都用它。 */
     fun aspectOf(template: Int = DEFAULT_TEMPLATE): Float {
@@ -143,7 +206,7 @@ object ZplGeometry {
      *  在 .5 边界差 1 点，所以两端都用这一支。 */
     fun roundHalf(v: Double): Int = if (v >= 0) Math.floor(v + 0.5).toInt() else -Math.floor(-v + 0.5).toInt()
 
-    fun mm2dots(mm: Double, dpi: Int = 203): Int = roundHalf(mm * dpi / MM_PER_INCH)
+    fun mm2dots(mm: Double, dpi: Int = ZplGeometry.dpi): Int = roundHalf(mm * dpi / MM_PER_INCH)
 
     /** 标签点阵尺寸，如 模板1 -> 480 x 320 */
     fun dims(template: Int = DEFAULT_TEMPLATE): Pair<Int, Int> {
@@ -171,7 +234,7 @@ object ZplGeometry {
         val fsW = boxW / maxOf(1e-6, textWidth(text, 1))
         // 实测整版字号统一小一号（约 12~15%）：OCR 行框往往比字形窄一点点，
         // 双约束取 min 之后又偏保守，纸上就整体小一号。统一放大 1.15 补偿。
-        return maxOf(8, Math.round(minOf(fsH, fsW) * FONT_GAIN).toInt())
+        return maxOf(MIN_FONT_DOTS, Math.round(minOf(fsH, fsW) * FONT_GAIN).toInt())
     }
 
     /**
@@ -182,8 +245,8 @@ object ZplGeometry {
      */
     fun anchorDyText(fontSize: Int, lines: Int = 1): Int = lines * fontSize + TEXT_BASELINE_FIX
 
-    /** 1.5mm @203dpi */
-    private const val TEXT_BASELINE_FIX = 12
+    /** 1.5mm @当前 dpi（203dpi 下 = 12 点，与历史值一致） */
+    private val TEXT_BASELINE_FIX: Int get() = mm2dots(TEXT_BASELINE_FIX_MM)
 
     fun anchorDyBarcode1d(barHeight: Int): Int = barHeight
 
@@ -202,8 +265,8 @@ object ZplGeometry {
     fun qrLayout(x: Int, w: Float, text: String, labelW: Int): QrLayout {
         val modules = qrModulesForText(text)
         val usable = labelW - MARGIN - x
-        var mag = (w / modules).roundToInt().coerceIn(2, 10)
-        while (mag > 2 && modules * mag > usable) mag -= 1
+        var mag = (w / modules).roundToInt().coerceIn(QR_MIN_MAG, QR_MAX_MAG)
+        while (mag > QR_MIN_MAG && modules * mag > usable) mag -= 1
         val blackH = modules * mag
         return QrLayout(mag, blackH, anchorDyQr(blackH, mag))
     }

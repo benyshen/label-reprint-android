@@ -30,6 +30,21 @@ class PrinterPrefs(ctx: Context) {
         get() = sp.getBoolean(KEY_AUTO, true)
         set(v) = sp.edit().putBoolean(KEY_AUTO, v).apply()
 
+    /**
+     * 打印分辨率（203 / 300 / 600）。
+     *
+     * 为什么必须落盘：现场是同一台手机轮着连 203 和 300 的机器，每次冷启都回落默认 203
+     * 的话，接上 300 的机器会印出 2/3 大的标签 —— 而纸已经出来了，才发现算谁的。
+     */
+    var dpi: Int
+        get() = sp.getInt(KEY_DPI, 203)
+        set(v) = sp.edit().putInt(KEY_DPI, if (v in listOf(203, 300, 600)) v else 203).apply()
+
+    /** 用户是否手选过分辨率（手选优先于打印机自报，避免"我以为改了、其实被覆盖"） */
+    var dpiPinned: Boolean
+        get() = sp.getBoolean(KEY_DPI_PINNED, false)
+        set(v) = sp.edit().putBoolean(KEY_DPI_PINNED, v).apply()
+
     fun remember(spec: String, name: String) {
         this.spec = spec.trim()
         this.name = name.trim()
@@ -43,5 +58,7 @@ class PrinterPrefs(ctx: Context) {
         const val KEY_SPEC = "spec"
         const val KEY_NAME = "name"
         const val KEY_AUTO = "auto_connect"
+        const val KEY_DPI = "dpi"
+        const val KEY_DPI_PINNED = "dpi_pinned"
     }
 }

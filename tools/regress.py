@@ -91,6 +91,16 @@ def main() -> int:
         ("文字/条码净空下限 6 点", G.MIN_TEXT_BARCODE_GAP == 6.0),
         # QR 净空 = 6 + 1mm(203dpi → 8 点) = 14 点
         ("二维码下方净空 = 通用 + 1mm = 14 点", G.QR_TEXT_GAP == 14),
+        # --- 分辨率：一套 mm 常量必须能算出三档点值（203 的值与历史逐字节相同）---
+        ("300dpi 模板1 = 709x472 点", (G.set_dpi(300), G.dims(1))[1] == (709, 472)),
+        ("300dpi 留白/净空/模块宽按比例放大（18/21/3）",
+         (G.MARGIN, G.QR_TEXT_GAP, G.MIN_MODULE_DOTS) == (18, 21, 3.0)),
+        ("300dpi 框线厚度 7 点 / 最小字号 12 点", (G.BOX_THICKNESS_DOTS, G.MIN_FONT_DOTS) == (7, 12)),
+        ("600dpi 模板1 = 1417x945 点", (G.set_dpi(600), G.dims(1))[1] == (1417, 945)),
+        ("600dpi 模块宽下限 6 点 / QR mag 下限 6", (G.MIN_MODULE_DOTS, G.QR_MIN_MAG) == (6.0, 6)),
+        ("切回 203dpi 数值还原（12/6/14/2.0/5）",
+         (G.set_dpi(203), (G.MARGIN, G.GUARD, G.QR_TEXT_GAP, G.MIN_MODULE_DOTS, G.BOX_THICKNESS_DOTS))[1]
+         == (12, 6, 14, 2.0, 5)),
     ]
     bad_const = []
     for name, ok in checks:
