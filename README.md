@@ -1,7 +1,8 @@
 # 标签复刻机 label-reprint-android
 
-**当前版本：V2.3（2026-11-02）** — 要素编辑支持「字号」与「条码缩放 `^BY n,m`」，
-详见 `docs/V2.3-版本记录.md`（含 V2.1 四点标定 / V2.2 点按放角点 + Hough 框线补记）；
+**当前版本：V2.4（2026-11-12）** — 文字 OCR 升级 PP-OCRv6 small，详见 `docs/V2.4-版本记录.md`；
+V2.3 的「要素编辑字号 + 条码缩放 `^BY n,m`」见 `docs/V2.3-版本记录.md`（含 V2.1 四点标定 / V2.2 点按放角点 + Hough 框线补记）；
+**代码已含 V2.5 打印分辨率支持（203/300/600 dpi，点常量改 mm 声明，待出包出文档）**；
 框架与几何基线见 `docs/V2.0-版本记录.md`；逐版改动见 `docs/修改记录.md`
 （含安装包体积/sha256/签名指纹）；细节见 `docs/V1.0~V1.9-版本记录.md`；
 封版回归 `python tools/regress.py`（退出码 0 = 通过；V2.0 改了码制发射，基线需重录）。
@@ -10,7 +11,10 @@
 V1.9 正式签名包仍在 `out/label-reprint-V1.9-release.apk`（433 MiB，模型全部内嵌，无需联网）。
 ⚠️ **AI Data Capture SDK 必须用 4.0.6**：4.1.0 在 TC201（QCS6690 / Android 15）上初始化直接抛
 `AI Vision SDK is not supported`（Zebra 自家 App 同样崩），4.0.6 不限机型。条码模型 `barcode-decoder-5.0.4` 不变。
-签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级。
+签名密钥 `android-app/release.keystore` + `keystore.properties` 必须与源码一起备份，丢了就无法原地升级；
+**密钥与厂商 SDK 二进制不入本仓库**（`libs/*.aar|*.jar`、`release.keystore`、`keystore.properties` 已被 `.gitignore` 排除），
+clone 后需自备这三样才能出包：SDK 从 JFrog `zebratech.jfrog.io` 或 `D:\AISuite_Android_Samples\models` 取，
+签名文件从本地离线备份取（本机仍在原位）。`testImage/` 的 6 张现场照片同理只留本地。
 V1.3 之前的包是 debug 签名，**从旧版覆盖安装会失败，需先 `adb uninstall`**；V1.3 → V1.4 可直接 `install -r`。
 
 拍照 ↓ 识别 ↓ 重新生成 ZPL ↓ 打印。目标是「看到一张标签，把它重新打出来」。

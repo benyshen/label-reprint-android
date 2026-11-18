@@ -16,6 +16,23 @@ shots/
 # 使用手册的中间截图（12MB），成品 HTML 入库
 manual/img/
 
+# 厂商专有 SDK 二进制（Zebra 私有授权，单文件 66~147MB，不进公开仓库）：
+# 需要时从 JFrog Artifactory(zebratech.jfrog.io) 或 D:\AISuite_Android_Samples\models 取回同名文件
+android-app/app/libs/AI-Data-Capture-SDK-*.aar*
+android-app/app/libs/barcode-decoder-*.aar
+android-app/app/libs/ZSDK_ANDROID_API*.jar*
+# 例外：zxingcpp-3.2.0-snap.aar（Apache-2.0，1.9MB，A/B 实验用）随库走
+
+# 签名材料：密钥绝不入公开库，本地另存离线备份（丢了无法原地升级）
+android-app/release.keystore
+android-app/keystore.properties
+
+# 现场回归语料（6 张原始照片 111MB，含客户标签内容），本地保留
+testImage/
+
+# 工具临时输出
+out_dpi300/
+
 # Python
 __pycache__/
 *.pyc
