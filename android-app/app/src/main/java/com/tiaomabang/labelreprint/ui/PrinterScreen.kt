@@ -1,6 +1,7 @@
 package com.tiaomabang.labelreprint.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.getValue
@@ -167,6 +168,8 @@ fun PrinterScreen(
     onChooseBle: (BleDevice) -> Unit,
     onScanBle: () -> Unit,
     onOpenBtSettings: () -> Unit,
+    btGranted: Boolean = true,
+    onRequestBt: () -> Unit = {},
     onAutoConnect: (Boolean) -> Unit,
     onTestPrint: () -> Unit,
     onCalibrate: () -> Unit,
@@ -206,6 +209,34 @@ fun PrinterScreen(
             // 之前盖在取景框上那两块输入框很难点到（用户反馈无法修改），已挪走。
             LabelSizeCard(onCustomSize)
             DpiCard(dpi = dpi, onDpi = onDpi)
+
+            // 权限没到位：扫描与打印都做不了，必须在这一页就有可点的入口
+            // （V2.4 现场反馈：只看到"缺少蓝牙权限"，没有任何地方能补授权）
+            if (!btGranted) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "缺少蓝牙权限（附近的设备）。没有它扫不到打印机、也连不上。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onRequestBt) { Text("申请权限") }
+                        OutlinedButton(onClick = onOpenBtSettings) { Text("打开系统蓝牙设置") }
+                    }
+                    Text(
+                        "若系统不再弹窗：到「设置 → 应用 → 标签复刻机 → 权限 → 附近的设备」手动允许",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
 
             PrinterStatusCard(
                 ui = ui,

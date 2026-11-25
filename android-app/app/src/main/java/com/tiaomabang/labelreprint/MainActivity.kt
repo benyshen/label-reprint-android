@@ -205,6 +205,32 @@ class MainActivity : ComponentActivity() {
     private var savePhoto by mutableStateOf(false)
     private var printSeq by mutableStateOf(0)
 
+    /** 蓝牙权限到位后要接着做的事（例如"用户刚点了扫描"）。权限对话框是异步的，靠它把动作接回去。 */
+    private var afterBtGranted: (() -> Unit)? = null
+
+    /** 蓝牙权限当前是否到位。onResume 用它判断用户是不是刚从系统设置里开完权限回来。 */
+    private var btGranted by mutableStateOf(false)
+
+    /**
+     * 要蓝牙权限的唯一入口：已授予就立刻执行 [after]，否则发起申请、授予后再执行。
+     * **不要在别处裸调 `btPermission.launch()`** —— 多处并发发起会让系统丢掉后一个对话框，
+     * 回调直接回"拒绝"，用户看到的就是"缺少蓝牙权限"却根本没弹过窗。
+     */
+    private fun requestBtIfNeeded(after: () -> Unit = {}) {
+        val missing = missingBtPermissions()
+        if (missing.isEmpty()) {
+            btGranted = true
+            paired = listPairedDevices(this)
+            Log.i(TAG, "PRINT >>> 蓝牙权限已到位，已配对 ${paired.size} 台：" +
+                paired.joinToString { "${it.name}@${it.mac}" })
+            after()
+            return
+        }
+        afterBtGranted = after
+        Log.i(TAG, "PRINT >>> 申请蓝牙权限：${missing.joinToString()}")
+        btPermission.launch(missing.toTypedArray())
+    }
+
     /**
      * Android 12+ 连接蓝牙要 BLUETOOTH_CONNECT，**并额外要 BLUETOOTH_SCAN**：
      * Zebra SDK 的 BluetoothConnection.open() 内部会调 cancelDiscovery()，那是 SCAN 权限。
@@ -214,18 +240,26 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             val missing = result.filterValues { !it }.keys
             if (missing.isEmpty()) {
+                btGranted = true
                 paired = listPairedDevices(this)
+                bleNote = ""
                 Log.i(TAG, "PRINT >>> 蓝牙权限已授予，已配对 ${paired.size} 台：" +
                     paired.joinToString { "${it.name}@${it.mac}" })
                 restorePrinterTarget()
+                afterBtGranted?.invoke()
             } else {
-                printerState = "缺少蓝牙权限：${missing.joinToString()}"
-                printerUi = printerUi.copy(
-                    phase = LinkPhase.ERROR,
-                    detail = "缺少蓝牙权限：${missing.joinToString()}",
-                )
-                Log.w(TAG, "PRINT >>> 蓝牙权限被拒：${missing.joinToString()}")
+                btGranted = false
+                // 系统不会再为"已拒绝且不再询问"的权限弹窗：必须给一句自己能走通的话，
+                // 否则界面只剩"缺少蓝牙权限"，用户无处可点（V2.4 的现场反馈就是这个）
+                val tip = "缺少蓝牙权限（${missing.joinToString()}）。" +
+                    "若系统不再弹窗：到「设置 → 应用 → 标签复刻机 → 权限」把「附近的设备」和「相机」改成允许，再回到本页"
+                printerState = tip
+                bleNote = tip
+                printerUi = printerUi.copy(phase = LinkPhase.ERROR, detail = tip)
+                Log.w(TAG, "PRINT >>> 蓝牙权限被拒：${missing.joinToString()} " +
+                    "（不再询问=${missing.none { shouldShowRequestPermissionRationale(it) }}）")
             }
+            afterBtGranted = null
         }
 
     // ---- 相机 ----
@@ -237,6 +271,9 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             status = if (granted) "相机就绪" else "没有相机权限：可以用「相册」选一张标签照片"
             if (granted) bindCamera()
+            // 蓝牙权限等相机对话框关掉之后再要：两个 requestPermissions 同时发起时，
+            // 后一个对话框会被系统丢掉、回调直接返回"拒绝" —— 新装机器上两个都是第一次申请，必撞
+            requestBtIfNeeded()
         }
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -298,17 +335,30 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (hasCameraPermission()) bindCamera() else cameraPermission.launch(Manifest.permission.CAMERA)
-
-        // 蓝牙：枚举已配对设备 + 真实打印都要这两个权限（Android 12+ 是运行时权限）
-        val missing = missingBtPermissions()
-        if (missing.isNotEmpty()) {
-            btPermission.launch(missing.toTypedArray())
+        // 权限：相机与蓝牙**必须串行**申请。以前这里连着 launch 两个，第二个对话框会被系统丢掉、
+        // 回调返回"拒绝" —— 新装机（两者都没授权）必现"缺少蓝牙权限、扫不到打印机"。
+        if (hasCameraPermission()) {
+            bindCamera()
+            requestBtIfNeeded()
         } else {
-            paired = listPairedDevices(this)
-            Log.i(TAG, "PRINT >>> 已配对 ${paired.size} 台：" +
-                paired.joinToString { "${it.name}@${it.mac}" })
-            restorePrinterTarget()
+            cameraPermission.launch(Manifest.permission.CAMERA)   // 蓝牙在相机回调里接着要
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 用户可能是去系统设置里手动开了权限再切回来：不重新读一次，界面就永远停在"缺少蓝牙权限"
+        val now = missingBtPermissions().isEmpty()
+        if (now != btGranted) {
+            btGranted = now
+            if (now) {
+                paired = listPairedDevices(this)
+                bleNote = ""
+                Log.i(TAG, "PRINT >>> onResume：蓝牙权限已到位，已配对 ${paired.size} 台：" +
+                    paired.joinToString { "${it.name}@${it.mac}" })
+            } else {
+                Log.w(TAG, "PRINT >>> onResume：蓝牙权限仍缺失 ${missingBtPermissions()}")
+            }
         }
     }
 
@@ -434,6 +484,8 @@ class MainActivity : ComponentActivity() {
                         onChooseBle = { d -> choosePrinter("BLE:${d.mac}", d.name) },
                         onScanBle = ::scanBle,
                         onOpenBtSettings = ::openBluetoothSettings,
+                        btGranted = btGranted,
+                        onRequestBt = { requestBtIfNeeded() },
                         onAutoConnect = { v -> autoConnect = v; printerPrefs.autoConnect = v },
                         onTestPrint = ::printTestPage,
                         onCalibrate = ::calibratePrinter,
@@ -656,6 +708,13 @@ class MainActivity : ComponentActivity() {
      * 每扫到一台就追加到列表；结束后更新提示。
      */
     private fun scanBle() {
+        if (bleScanning) return
+        // 先要权限再扫：以前这里是裸扫，权限没到位时只落一句"缺少蓝牙扫描权限"，
+        // 而用户没有任何入口能补授权（点了扫描也永远没反应）
+        requestBtIfNeeded { scanBleNow() }
+    }
+
+    private fun scanBleNow() {
         if (bleScanning) return
         bleDevices = emptyList()
         bleNote = ""
