@@ -15,9 +15,11 @@ import com.zebra.sdk.comm.BluetoothConnectionInsecure
 import com.zebra.sdk.comm.Connection
 import com.zebra.sdk.comm.ConnectionException
 import com.zebra.sdk.printer.PrinterLanguage
+import com.zebra.sdk.comm.BluetoothStatusConnection
+import com.zebra.sdk.comm.BluetoothStatusConnectionInsecure
 import com.zebra.sdk.printer.PrinterStatus
+import com.zebra.sdk.printer.PrinterUtil
 import com.zebra.sdk.printer.SGD
-import com.zebra.sdk.printer.internal.PrinterStatusZpl
 import com.zebra.sdk.printer.ZebraPrinterFactory
 import com.zebra.sdk.printer.ZebraPrinterLinkOs
 import kotlinx.coroutines.android.asCoroutineDispatcher
@@ -106,8 +108,30 @@ class ZebraGateway(
     private val log: (String) -> Unit = { Log.i(TAG, it) },
 ) : PrinterGateway {
 
+    /** 上次发送完 ZPL 的时刻（ms）。用来算静默期，0 = 还没打印过。 */
+    @Volatile
+    private var lastPrintAt = 0L
+
+    /** 状态查询连续失败次数；到阈值就暂停一段时间，别每 5s 去敲一条答不上来的链路。 */
+    private var statusFailStreak = 0
+    private var statusSuspendedUntil = 0L
+
     companion object {
         private const val TAG = "ZebraGateway"
+
+        /**
+         * ^XZ 之后等多久。**取官方示例的值 500ms**（BluetoothConnection 类文档的示例：
+         * `thePrinterConn.write(zplData.getBytes()); Thread.sleep(500); thePrinterConn.close();`
+         * 注释原文 "Make sure the data got to the printer before closing the connection"）。
+         */
+        private const val POST_PRINT_SETTLE_MS = 500L
+
+        /** 打印后多久内不碰链路（状态轮询跳过）。必须大于一次作业的实际出纸时间。 */
+        private const val STATUS_QUIET_MS = 3000L
+
+        /** 状态查询连续失败几次就暂停；暂停多久（ms） */
+        private const val STATUS_FAIL_LIMIT = 3
+        private const val STATUS_SUSPEND_MS = 60_000L
 
         /** 连接后先发这个，否则 line-mode 机器会把 ZPL 当纯文本吐出来 */
         const val SET_ZPL = "! U1 setvar \"device.languages\" \"zpl\"\n"
@@ -133,6 +157,21 @@ class ZebraGateway(
     /** 当前链路类型（连上之后才有效）。BLE 的 MTU / 分包行为和 SPP 完全不同，界面与日志都要能区分。 */
     @Volatile
     private var link: Transport = Transport.NONE
+
+    /**
+     * **状态专用连接**（官方 `*StatusConnection`）。
+     *
+     * 官方为状态查询单独提供了 `BluetoothStatusConnection` / `TcpStatusConnection` —— 目的就是让
+     * 状态查询不占用打印通道。这正是我们"发完 ZPL 紧接着查状态 → 作业不出纸"的根因所在：
+     * 老代码在**同一条 SPP 通道**上写状态命令，等于往打印数据流里插命令。
+     * 只有 SPP/TCP 有对应的 Status 连接类；BLE（BluetoothLeConnection）没有，只能退回主连接（配合静默期）。
+     */
+    @Volatile
+    private var statusConn: Connection? = null
+
+    /** 主连接的 MAC / 主机端口，用来给状态通道开一条同样的链路。 */
+    @Volatile
+    private var targetMac: String? = null
 
     override fun transport(): Transport = link
 
@@ -220,6 +259,19 @@ class ZebraGateway(
                     ?: "Zebra 打印机"
                 conn = c
                 printer = p
+                statusFailStreak = 0
+                statusSuspendedUntil = 0L
+                // 官方做法：状态查询走独立的 *StatusConnection，绝不占用打印通道。
+                // 只有 SPP / TCP 有对应的 Status 连接类；BLE 没有，退回主连接（靠静默期避开打印）。
+                targetMac = normalized.substringAfter(':').trim()
+                runCatching { closeStatusConn() }
+                if (link == Transport.SPP) {
+                    statusConn = runCatching {
+                        if (usedName.contains("Insecure")) BluetoothStatusConnectionInsecure(targetMac!!)
+                        else BluetoothStatusConnection(targetMac!!)
+                    }.getOrNull()
+                    log("状态通道：" + if (statusConn != null) "BluetoothStatusConnection（独立于打印通道）" else "未建立，退回主连接")
+                }
                 log("connected: $model @ $normalized (linkOs=${p != null})")
                 GatewayResult.Ok(model)
             } catch (t: Throwable) {
@@ -245,21 +297,56 @@ class ZebraGateway(
      * 万一 `~HS` 也失败，才退回 Link-OS 的 JSON 接口（包在 runCatching 里）。
      */
     private fun readStatus(c: Connection): PrinterStatus? {
-        runCatching { PrinterStatusZpl(c) as PrinterStatus }
+        // 官方入口：PrinterUtil.getCurrentStatus(Connection, PrinterLanguage)。
+        // 传 PrinterLanguage.ZPL 时内部走 ~HS（PrinterStatusZpl），不会碰 Link-OS 的 JSON 状态键
+        // （那个键在 ZR668 上为 null，SDK 会在 parseJsonStatusResponse 里 NPE）。
+        runCatching { PrinterUtil.getCurrentStatus(c, PrinterLanguage.ZPL) }
             .onSuccess { return it }
-            .onFailure { log("~HS 状态读取失败(${it.javaClass.simpleName})，退回 Link-OS JSON 状态") }
-        return runCatching { (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus }
-            .getOrNull()
+            .onFailure { log("getCurrentStatus(ZPL) 失败：${it.javaClass.simpleName}: ${it.message}") }
+        return null
+    }
+
+    /** 状态用的连接：优先独立状态通道，其次主连接（BLE 只能这样）。 */
+    private fun statusLink(): Connection? {
+        val sc = statusConn
+        if (sc != null) {
+            runCatching { if (!sc.isConnected) sc.open() }
+                .onFailure { log("状态通道 open 失败：${it.javaClass.simpleName}，本次退回主连接") }
+            if (runCatching { sc.isConnected }.getOrDefault(false)) return sc
+        }
+        return conn
     }
 
     override suspend fun status(): String = withContext(sdk) {
         // 与打印共用同一把锁：轮询（每 5s 一次）绝不能插进一次 ZPL 发送中间去写同一条链路，
         // 否则蓝牙通道上的读写会交错，成纸可能只打一半。
+        // 打印后静默期：刚发完作业就去问状态，ZR668 上会导致作业不执行（见 printZpl 注释）。
+        // 这段时间**完全不碰蓝牙链路**，直接把上一次的状态回给界面。
+        val since = System.currentTimeMillis() - lastPrintAt
+        if (lastPrintAt > 0 && since < STATUS_QUIET_MS) {
+            return@withContext "刚发送打印，稍后再查（静默 ${(STATUS_QUIET_MS - since) / 1000 + 1}s）"
+        }
+        // 连续答不上来就停一会儿：ZR668 这类固件不支持状态查询时，每 5s 发一次 `~HS`
+        // 等于不停往正在出纸的链路里插命令（现场怀疑就是它让作业不执行）。
+        if (System.currentTimeMillis() < statusSuspendedUntil) {
+            return@withContext "状态查询已暂停（该固件不支持状态查询；不影响打印）"
+        }
         lock.withLock {
-            val c = conn ?: return@withLock "未连接"
+            if (conn == null) return@withLock "未连接"
+            // 打印刚结束、又没有独立状态通道（BLE）时**不要去碰主连接**：
+            // 那正是"作业还没执行完就被状态命令打断"的场景。等静默期过了再查。
+            val c = statusLink() ?: return@withLock "未连接"
             runCatching {
-                val st: PrinterStatus = readStatus(c)
-                    ?: return@withLock "状态不可用（该固件不支持状态查询；不影响打印）"
+                val st: PrinterStatus? = readStatus(c)
+                if (st == null) {
+                    statusFailStreak++
+                    if (statusFailStreak >= STATUS_FAIL_LIMIT) {
+                        statusSuspendedUntil = System.currentTimeMillis() + STATUS_SUSPEND_MS
+                        log("状态查询连续失败 ${statusFailStreak} 次，暂停 ${STATUS_SUSPEND_MS / 1000}s")
+                    }
+                    return@withLock "状态不可用（该固件不支持状态查询；不影响打印）"
+                }
+                statusFailStreak = 0
                 when {
                     st.isReadyToPrint -> "就绪"
                     st.isPaused -> "已暂停（请在打印机上恢复）"
@@ -279,14 +366,21 @@ class ZebraGateway(
             try {
                 val c = conn ?: return@withLock GatewayResult.Err("未连接打印机")
                 if (!c.isConnected) c.open()
-                c.write(zpl.toByteArray(Charsets.UTF_8))
-                Thread.sleep(400)   // 等尾包落盘，少了这句标签只打一半
-                val st = readStatus(c)     // 走 ~HS：ZR668 的 JSON 状态键会让 SDK 抛 NPE（见 readStatus 注释）
-                if (st != null && (st.isPaperOut || st.isHeadOpen || st.isPaused)) {
-                    GatewayResult.Err(statusTextOf(st))
-                } else {
-                    GatewayResult.Ok("${System.currentTimeMillis() - t0} ms")
-                }
+                // 把要发的 ZPL 原文打进日志（逐行加前缀，logcat 才不会丢行）。
+                // 现场"显示已发送、纸不出来"时，这是唯一能分清「数据坏了」还是「链路/打印机侧问题」的证据：
+                // 拿这段粘到 Labelary 或另一台机上一打就知道。
+                val bytes = zpl.toByteArray(Charsets.UTF_8)
+                log("PRINT >>> ZPL ${bytes.size} 字节，${zpl.count { it == '\n' } + 1} 行")
+                zpl.split("\n").forEach { log("PRINTZPL >>> $it") }
+                c.write(bytes)
+                lastPrintAt = System.currentTimeMillis()
+                // 打印路径里**不再查询状态**（V2.6 的教训，V2.7 改）：
+                // 送完 ZPL 紧接着发 `~HS`，在 ZR668 上会把作业吃掉/整条链路卡住 ——
+                // 现场现象就是"显示已发送、纸不出来"，而 V2.5（状态查询 NPE 秒挂、实际没发出命令）反而能打。
+                // 状态交给 5s 轮询，而且轮询在打印后 STATUS_QUIET_MS 内不碰链路（见 status()）。
+                // 这里的 1s 只是让**尾包落盘**：^XZ 之后立刻做任何事都可能截断最后一个包。
+                Thread.sleep(POST_PRINT_SETTLE_MS)
+                GatewayResult.Ok("${System.currentTimeMillis() - t0} ms（含 ${POST_PRINT_SETTLE_MS}ms 等待落盘）")
             } catch (t: Throwable) {
                 log("print failed: ${t.javaClass.name}: ${t.message}\n" +
                     t.stackTrace.take(6).joinToString("\n") { "    at $it" })
@@ -355,7 +449,13 @@ class ZebraGateway(
     /** 退出时调用：复用同一个 HandlerThread，别忘了 quit */
     fun shutdown() = runCatching { thread.quitSafely() }
 
+    private fun closeStatusConn() {
+        runCatching { statusConn?.close() }
+        statusConn = null
+    }
+
     private fun closeInternal() {
+        closeStatusConn()
         runCatching { conn?.close() }
         conn = null
         printer = null
