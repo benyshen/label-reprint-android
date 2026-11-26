@@ -44,7 +44,7 @@ enum class Transport(val label: String, val short: String) {
 interface PrinterGateway {
     /** "BT:AA:BB:.." 经典蓝牙 | "BLE:AA:BB:.." 低功耗蓝牙 | "TCP:1.2.3.4[:9100]" 网口 */
     suspend fun connect(spec: String): GatewayResult
-    suspend fun status(): String
+    suspend fun status(force: Boolean = false): String
     suspend fun printZpl(zpl: String): GatewayResult
     suspend fun sendSgd(name: String, value: String): GatewayResult
     suspend fun getSgd(name: String): GatewayResult
@@ -112,9 +112,12 @@ class ZebraGateway(
     @Volatile
     private var lastPrintAt = 0L
 
-    /** 状态查询连续失败次数；到阈值就暂停一段时间，别每 5s 去敲一条答不上来的链路。 */
+    /** 状态查询连续失败次数；到阈值就**停用**探测（直到重连或用户手动刷新）。 */
     private var statusFailStreak = 0
     private var statusSuspendedUntil = 0L
+    /** true = 已判定这台机答不上状态查询，不再自动发命令（手动刷新可强制重试一次）。 */
+    @Volatile
+    private var statusDisabled = false
 
     companion object {
         private const val TAG = "ZebraGateway"
@@ -261,6 +264,7 @@ class ZebraGateway(
                 printer = p
                 statusFailStreak = 0
                 statusSuspendedUntil = 0L
+                statusDisabled = false
                 // 官方做法：状态查询走独立的 *StatusConnection，绝不占用打印通道。
                 // 只有 SPP / TCP 有对应的 Status 连接类；BLE 没有，退回主连接（靠静默期避开打印）。
                 targetMac = normalized.substringAfter(':').trim()
@@ -317,7 +321,8 @@ class ZebraGateway(
         return conn
     }
 
-    override suspend fun status(): String = withContext(sdk) {
+    override suspend fun status(force: Boolean): String = withContext(sdk) {
+        if (force) { statusDisabled = false; statusSuspendedUntil = 0L; statusFailStreak = 0 }
         // 与打印共用同一把锁：轮询（每 5s 一次）绝不能插进一次 ZPL 发送中间去写同一条链路，
         // 否则蓝牙通道上的读写会交错，成纸可能只打一半。
         // 打印后静默期：刚发完作业就去问状态，ZR668 上会导致作业不执行（见 printZpl 注释）。
@@ -328,8 +333,8 @@ class ZebraGateway(
         }
         // 连续答不上来就停一会儿：ZR668 这类固件不支持状态查询时，每 5s 发一次 `~HS`
         // 等于不停往正在出纸的链路里插命令（现场怀疑就是它让作业不执行）。
-        if (System.currentTimeMillis() < statusSuspendedUntil) {
-            return@withContext "状态查询已暂停（该固件不支持状态查询；不影响打印）"
+        if (statusDisabled || System.currentTimeMillis() < statusSuspendedUntil) {
+            return@withContext "状态查询已停用（该固件答不上来，点「刷新状态」可强制再试）"
         }
         lock.withLock {
             if (conn == null) return@withLock "未连接"
@@ -341,8 +346,9 @@ class ZebraGateway(
                 if (st == null) {
                     statusFailStreak++
                     if (statusFailStreak >= STATUS_FAIL_LIMIT) {
+                        statusDisabled = true
                         statusSuspendedUntil = System.currentTimeMillis() + STATUS_SUSPEND_MS
-                        log("状态查询连续失败 ${statusFailStreak} 次，暂停 ${STATUS_SUSPEND_MS / 1000}s")
+                        log("状态查询连续失败 ${statusFailStreak} 次 → 停用自动查询（不再占用蓝牙链路）")
                     }
                     return@withLock "状态不可用（该固件不支持状态查询；不影响打印）"
                 }
@@ -508,7 +514,7 @@ class ZebraGateway(
 /** 无打印机时的干跑通道：只记录 ZPL，用于验证版面与流程 */
 class DryRunGateway : PrinterGateway {
     override suspend fun connect(spec: String) = GatewayResult.Ok("干跑模式（未连接真实打印机）")
-    override suspend fun status() = "干跑模式"
+    override suspend fun status(force: Boolean) = "干跑模式"
     override suspend fun printZpl(zpl: String) =
         GatewayResult.Ok("已生成 ZPL（未发送，${zpl.length} 字符）")
     override suspend fun sendSgd(name: String, value: String) = GatewayResult.Ok("干跑模式：$name=$value")

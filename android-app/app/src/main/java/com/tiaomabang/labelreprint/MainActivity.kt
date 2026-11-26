@@ -477,7 +477,7 @@ class MainActivity : ComponentActivity() {
                         autoConnect = autoConnect,
                         busy = printing || busy,
                         version = appVersion,
-                        onRefresh = ::refreshPrinterStatus,
+                        onRefresh = { refreshPrinterStatus(force = true) },   // 手动刷新：允许强制重试
                         onReconnect = ::reconnectPrinter,
                         onDisconnect = ::disconnectPrinter,
                         onChooseClassic = { d -> choosePrinter("BT:${d.mac}", d.name) },
@@ -581,16 +581,17 @@ class MainActivity : ComponentActivity() {
             connectPrinter(spec)
         }
 
-        // 连着的时候每 5s 问一次状态：缺纸/开盖/暂停都是"连得上但打不了"，
-        // 只在连接那一刻读一次的话，用户换了纸或打开盖子界面上永远显示"就绪"。
-        // 打印中/识别中跳过（同一条链路不要并发写）。
-        LaunchedEffect(printerUi.phase) {
-            if (printerUi.phase != LinkPhase.CONNECTED) return@LaunchedEffect
-            while (isActive) {
-                delay(5_000)
-                if (!printing && !busy) refreshPrinterStatus()
-            }
-        }
+        // **不做周期轮询**（V2.8 移除，原来这里每 5s 查一次状态）。
+        //
+        // 原来那版的问题是实打实的：
+        //   1) 每分钟往蓝牙链路发 12 条状态命令，用户看到的就是"连上后一直有数据交互"；
+        //   2) Compose 的 LaunchedEffect 在 Activity 进后台后**仍继续执行**（composition 没销毁），
+        //      所以锁屏/切后台还在每 5s 敲一次打印机；
+        //   3) ZR668 这类移动机本身答不上状态查询，等于 12 次/分钟全是超时重试，
+        //      还挤占了打印通道（V2.7 的独立状态通道也是被它带起来的）。
+        //
+        // 现在状态只在三种时机查，全部是**按需**：连接成功后一次、用户点「刷新状态」、
+        // 打印失败时一次（用于给出原因）。换纸后想更新状态，点一下那个按钮即可。
 
         // 自动打印（钩子）：等 plan 出来再打。键里必须带 plan —— 只键 printWanted 的话，
         // flag 在 onCreate 就置位、那时还没有 plan，effect 立即返回且再也不会重跑。
@@ -788,10 +789,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 主动问一次打印机当前状态（换纸后点"刷新状态"就走这里，不重连） */
-    private fun refreshPrinterStatus() {
+    /**
+     * 查一次打印机状态。**只在连接后、用户点刷新、打印失败时调用，不做周期轮询**（见上面的说明）。
+     * @param force 用户手动刷新 = true，会清掉"这台机答不上状态查询"的判定并强制再试一次
+     */
+    private fun refreshPrinterStatus(force: Boolean = false) {
         if (printerUi.phase != LinkPhase.CONNECTED || printing || busy) return
         lifecycleScope.launch {
-            val st = printer.status()
+            val st = printer.status(force)
             // 掉线时 status() 返回的是人话原因；识别成掉线并把灯改成红，而不是继续显示"就绪"
             val alive = printer.isConnected() && !st.contains("未连接")
             printerUi = printerUi.copy(
@@ -868,6 +873,9 @@ class MainActivity : ComponentActivity() {
                         // 打印机缺纸/开盖/暂停是"链路通但打不了"，灯要变红而不是继续绿的
                         printerUi = printerUi.copy(phase = LinkPhase.ERROR, detail = r.reason, at = 0L)
                         Log.w(TAG, "PRINT >>> 失败 ${r.reason}｜$spec")
+                        // 失败时**主动查一次**状态，把原因（缺纸/开盖/暂停）补进界面；
+                        // 成功时绝不查 —— 那正是之前"发完就查、报警就把作业吃掉"的老毛病。
+                        refreshPrinterStatus()
                     }
                 }
             } finally {
