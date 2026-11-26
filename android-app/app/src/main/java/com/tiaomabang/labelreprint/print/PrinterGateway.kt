@@ -17,6 +17,7 @@ import com.zebra.sdk.comm.ConnectionException
 import com.zebra.sdk.printer.PrinterLanguage
 import com.zebra.sdk.printer.PrinterStatus
 import com.zebra.sdk.printer.SGD
+import com.zebra.sdk.printer.internal.PrinterStatusZpl
 import com.zebra.sdk.printer.ZebraPrinterFactory
 import com.zebra.sdk.printer.ZebraPrinterLinkOs
 import kotlinx.coroutines.android.asCoroutineDispatcher
@@ -229,13 +230,36 @@ class ZebraGateway(
         }
     }
 
+    /**
+     * 读打印机状态。
+     *
+     * **为什么不直接用 `printer.currentStatus`**：Link-OS 的 `PrinterStatusLinkOs` 是发
+     * `{}{"device.host_status":null}` 这个 JSON 查询、再 `map.get("device.host_status")` 后
+     * 直接 `.replaceAll(...)` —— **固件不支持这个键时返回 null，SDK 不解引用判空直接 NPE**。
+     * ZR668（V86.20.21Z）实测就是这种：`Attempt to invoke virtual method
+     * 'String String.replaceAll(String,String)' on a null object reference`，
+     * 而且这条异常会从 `status()` 漏到界面上的状态卡里（看着像打印失败，其实打印没事）。
+     *
+     * 所以改成走 ZPL 标准的 `~HS`（`PrinterStatusZpl` 自己解析主机状态串，不碰 JSON）。
+     * 我们连接后第一件事就是强制 ZPL 语言，所以这条路径对现场所有机型都成立；
+     * 万一 `~HS` 也失败，才退回 Link-OS 的 JSON 接口（包在 runCatching 里）。
+     */
+    private fun readStatus(c: Connection): PrinterStatus? {
+        runCatching { PrinterStatusZpl(c) as PrinterStatus }
+            .onSuccess { return it }
+            .onFailure { log("~HS 状态读取失败(${it.javaClass.simpleName})，退回 Link-OS JSON 状态") }
+        return runCatching { (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus }
+            .getOrNull()
+    }
+
     override suspend fun status(): String = withContext(sdk) {
         // 与打印共用同一把锁：轮询（每 5s 一次）绝不能插进一次 ZPL 发送中间去写同一条链路，
         // 否则蓝牙通道上的读写会交错，成纸可能只打一半。
         lock.withLock {
             val c = conn ?: return@withLock "未连接"
             runCatching {
-                val st: PrinterStatus = (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus
+                val st: PrinterStatus = readStatus(c)
+                    ?: return@withLock "状态不可用（该固件不支持状态查询；不影响打印）"
                 when {
                     st.isReadyToPrint -> "就绪"
                     st.isPaused -> "已暂停（请在打印机上恢复）"
@@ -257,16 +281,15 @@ class ZebraGateway(
                 if (!c.isConnected) c.open()
                 c.write(zpl.toByteArray(Charsets.UTF_8))
                 Thread.sleep(400)   // 等尾包落盘，少了这句标签只打一半
-                val st = runCatching {
-                    (printer ?: ZebraPrinterFactory.getLinkOsPrinter(c)).currentStatus
-                }.getOrNull()
+                val st = readStatus(c)     // 走 ~HS：ZR668 的 JSON 状态键会让 SDK 抛 NPE（见 readStatus 注释）
                 if (st != null && (st.isPaperOut || st.isHeadOpen || st.isPaused)) {
                     GatewayResult.Err(statusTextOf(st))
                 } else {
                     GatewayResult.Ok("${System.currentTimeMillis() - t0} ms")
                 }
             } catch (t: Throwable) {
-                log("print failed: ${t.message}")
+                log("print failed: ${t.javaClass.name}: ${t.message}\n" +
+                    t.stackTrace.take(6).joinToString("\n") { "    at $it" })
                 GatewayResult.Err(humanReason(t))
             }
         }
@@ -369,6 +392,11 @@ class ZebraGateway(
                 "缺少蓝牙扫描权限（Android 12+：Zebra SDK 连接时会调 cancelDiscovery，需要 BLUETOOTH_SCAN）"
             m.contains("permission", true) || m.contains("SecurityException", true) ->
                 "缺少蓝牙权限（Android 12+ 需 BLUETOOTH_CONNECT + BLUETOOTH_SCAN）"
+            // SDK 状态查询在少数固件上会 NPE（见 readStatus 的说明）：这不是打印失败，
+            // 原文丢给用户只会让人以为打印机坏了，所以在这里翻成人话。
+            m.contains("null object reference", true) ->
+                "打印机状态查询不可用（该固件没有 SDK 要的那个状态字段 device.host_status，SDK 内部空指针）。" +
+                    "**不影响打印**：纸若已正常输出可忽略；要看状态请用打印机面板。"
             m.contains("not connected", true) -> "蓝牙未连接"
             m.contains("Unable to connect to network printer", true) || m.contains("connect to", true) ->
                 "网络打印机连不上：确认 IP、端口 9100、与打印机同网段"
